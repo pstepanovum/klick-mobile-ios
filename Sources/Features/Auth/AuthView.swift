@@ -9,6 +9,8 @@ struct AuthView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var displayName = ""
+    @State private var agreedToPrivacy = false
+    @State private var showPrivacyPolicy = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +37,11 @@ struct AuthView: View {
                     strengthBar
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
+
+                if isRegistering {
+                    KlicCheckbox(isChecked: $agreedToPrivacy) { showPrivacyPolicy = true }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
             .padding(.top, 28)
             .animation(.easeInOut(duration: 0.2), value: isRegistering)
@@ -50,9 +57,14 @@ struct AuthView: View {
                 }
             }
             .padding(.top, 20)
+            .opacity(isRegistering && !agreedToPrivacy ? 0.4 : 1)
+            .disabled(isRegistering && !agreedToPrivacy)
 
             Button(isRegistering ? "I already have an account" : "Create an account") {
-                withAnimation(.easeInOut(duration: 0.2)) { isRegistering.toggle() }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isRegistering.toggle()
+                    agreedToPrivacy = false
+                }
             }
             .font(KlicFont.medium(14))
             .foregroundStyle(KlicColor.textMuted)
@@ -74,6 +86,9 @@ struct AuthView: View {
         .onTapGesture {
             UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         }
+        .sheet(isPresented: $showPrivacyPolicy) {
+            PrivacyPolicyView()
+        }
         .enableInjection()
     }
 
@@ -84,9 +99,9 @@ struct AuthView: View {
         let hasUpper   = password.range(of: "[A-Z]", options: .regularExpression) != nil
         let hasDigit   = password.range(of: "[0-9]", options: .regularExpression) != nil
         let hasSpecial = password.range(of: "[^A-Za-z0-9]", options: .regularExpression) != nil
-        if password.count < 8             { return (1, "Weak",   .red) }
-        if !hasUpper && !hasDigit         { return (2, "Fair",   .orange) }
-        if hasUpper && hasDigit && hasSpecial { return (4, "Strong", Color(red: 0.18, green: 0.8, blue: 0.44)) }
+        if password.count < 8                     { return (1, "Weak",   .red) }
+        if !hasUpper && !hasDigit                 { return (2, "Fair",   .orange) }
+        if hasUpper && hasDigit && hasSpecial     { return (4, "Strong", Color(red: 0.18, green: 0.8, blue: 0.44)) }
         return (3, "Good", Color(red: 0.55, green: 0.76, blue: 0.0))
     }
 

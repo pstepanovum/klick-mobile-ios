@@ -38,6 +38,49 @@ struct CircleControl: View {
     }
 }
 
+/// Checkbox with an inline "I agree to the Privacy Policy" label.
+struct KlicCheckbox: View {
+    @Binding var isChecked: Bool
+    let onPrivacyTap: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { isChecked.toggle() }
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isChecked ? KlicColor.primary : Color.clear)
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(
+                            isChecked ? KlicColor.primary : KlicColor.textMuted.opacity(0.45),
+                            lineWidth: 1.5
+                        )
+                    if isChecked {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(KlicColor.onPrimary)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+
+            HStack(spacing: 3) {
+                Text("I agree to the")
+                    .font(KlicFont.caption(13))
+                    .foregroundStyle(KlicColor.textMuted)
+                Button("Privacy Policy") { onPrivacyTap() }
+                    .font(KlicFont.caption(13))
+                    .foregroundStyle(KlicColor.primary)
+            }
+
+            Spacer()
+        }
+    }
+}
+
 /// Flat text field on a rounded surface — no border, no outline.
 struct KlicTextField: View {
     let placeholder: String
