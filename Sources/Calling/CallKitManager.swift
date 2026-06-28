@@ -177,6 +177,10 @@ final class CallKitManager: NSObject, ObservableObject {
             // The in-memory/persisted map was lost but we only know one call — answer it
             // rather than failing outright (CallKit hands us a UUID we must resolve).
             fallbackCallId = callIdToUUID.keys.first
+        } else if let single = persistedSingleCallId() {
+            // A fresh process (VoIP push launched the app) has empty in-memory maps, but
+            // persisted state holds exactly one call — resolve to it instead of failing.
+            fallbackCallId = single
         } else {
             fallbackCallId = nil
         }
@@ -196,6 +200,13 @@ final class CallKitManager: NSObject, ObservableObject {
     private func persistedCallId(for uuid: UUID) -> String? {
         let map = UserDefaults.standard.dictionary(forKey: uuidMapDefaultsKey) as? [String: String]
         return map?[uuid.uuidString]
+    }
+
+    /// The single persisted callId, when exactly one call is known — used to resolve a CallKit
+    /// answer UUID after a cold launch where the in-memory maps are empty.
+    private func persistedSingleCallId() -> String? {
+        let map = UserDefaults.standard.dictionary(forKey: uuidMapDefaultsKey) as? [String: String]
+        return map?.count == 1 ? map?.values.first : nil
     }
 
     private func removePersistedCallId(for uuid: UUID) {

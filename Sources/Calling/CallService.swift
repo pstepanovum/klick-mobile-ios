@@ -32,7 +32,15 @@ final class CallService: NSObject, ObservableObject {
         do {
             prepareRoom(callId: callId)
             APIClient.mobileDiagnostic(event: "livekit.join.configure", callId: callId, detail: video ? "video" : "audio")
-            // Speaker for video, earpiece for audio — applied to the session LiveKit manages.
+            // Hand LiveKit a fixed, valid session configuration instead of letting it compute
+            // one on the fly — the dynamic path occasionally failed to configure on the first
+            // (cold-start) call ("Audio Session Error 802"). Mode .videoChat routes to the
+            // speaker, .voiceChat to the earpiece.
+            AudioManager.shared.sessionConfiguration = AudioSessionConfiguration(
+                category: .playAndRecord,
+                categoryOptions: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay],
+                mode: video ? .videoChat : .voiceChat
+            )
             AudioManager.shared.isSpeakerOutputPreferred = video
             APIClient.mobileDiagnostic(event: "livekit.join.connect.start", callId: callId)
             try await room.connect(url: url, token: token)
