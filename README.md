@@ -1,6 +1,6 @@
-# klick-mobile-ios
+# klic-mobile-ios
 
-Native iOS client for **Klic** — SwiftUI, talking to `klick-server` for auth, chat, and call
+Native iOS client for **Klic** — SwiftUI, talking to `klic-server` for auth, chat, and call
 signaling, and to LiveKit for audio/video media.
 
 ## Requirements
@@ -63,7 +63,7 @@ Set `DEVELOPMENT_TEAM` in `project.yml`, or import the `.p12` + `.mobileprovisio
 - **LiveKit video** is rendered by `Sources/Calling/CallVideoView.swift`.
 
 To make push actually fire you need (from the Apple Developer portal):
-1. An **APNs Auth Key** (`.p8`) — put its `Key ID`, `Team ID`, and bundle id into `klick-server/.env`
+1. An **APNs Auth Key** (`.p8`) — put its `Key ID`, `Team ID`, and bundle id into `klic-server/.env`
    (`APNS_*`) and the `.p8` on the server.
 2. Enable **Push Notifications** capability for the app's bundle id; `Resources/Klic.entitlements`
    already sets `aps-environment`. Set your Team in Xcode (the generated `.xcodeproj` is gitignored).

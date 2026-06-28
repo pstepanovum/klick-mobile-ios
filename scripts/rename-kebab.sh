@@ -3,7 +3,7 @@
 # to lowercase kebab-case, then regenerate the Xcode project via xcodegen.
 #
 # Usage: bash scripts/rename-kebab.sh
-# Run from the klick-mobile-ios directory.
+# Run from the klic-mobile-ios directory.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
