@@ -65,8 +65,8 @@ Set `DEVELOPMENT_TEAM` in `project.yml`, or import the `.p12` + `.mobileprovisio
 To make push actually fire you need (from the Apple Developer portal):
 1. An **APNs Auth Key** (`.p8`) — put its `Key ID`, `Team ID`, and bundle id into `klick-server/.env`
    (`APNS_*`) and the `.p8` on the server.
-2. Enable **Push Notifications** + **VoIP** capabilities for `com.klic.app`; `Resources/Klic.entitlements`
-   already sets `aps-environment`.
+2. Enable **Push Notifications** capability for the app's bundle id; `Resources/Klic.entitlements`
+   already sets `aps-environment`. Set your Team in Xcode (the generated `.xcodeproj` is gitignored).
 
 LiveKit track accessors in `CallService.swift` target SDK v2 — adjust if your installed version differs.
 
