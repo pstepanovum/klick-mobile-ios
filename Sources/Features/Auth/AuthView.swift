@@ -27,6 +27,13 @@ struct AuthView: View {
             }
             .padding(.top, 12)
 
+            if isRegistering {
+                Text("Username: 3+ characters (a–z, 0–9, . _) · Password: 8+ characters")
+                    .font(KlicFont.caption())
+                    .foregroundStyle(KlicColor.textMuted)
+                    .multilineTextAlignment(.center)
+            }
+
             PillButton(title: isRegistering ? "Sign up" : "Log in") {
                 Task {
                     if isRegistering {

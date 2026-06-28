@@ -40,8 +40,10 @@ final class AppSession: ObservableObject {
             SocketService.shared.connect()
             DeviceRegistrar.sync()
             errorMessage = nil
+        } catch let error as APIError {
+            errorMessage = error.userMessage
         } catch {
-            errorMessage = "Could not sign in. Check your details and try again."
+            errorMessage = "Something went wrong. Please try again."
         }
     }
 }

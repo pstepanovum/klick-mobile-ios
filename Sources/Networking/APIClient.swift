@@ -1,6 +1,19 @@
 import Foundation
 
-enum APIError: Error { case badStatus(Int), decoding, noData }
+enum APIError: Error {
+    case server(message: String, status: Int)
+    case decoding
+    case noData
+
+    /// Human-readable message to show the user.
+    var userMessage: String {
+        switch self {
+        case .server(let message, _): return message
+        case .decoding: return "Unexpected response from the server."
+        case .noData: return "Couldn’t reach the server. Check your connection."
+        }
+    }
+}
 
 /// Thin async/await REST client for the Klic API. Injects the access token and
 /// transparently refreshes it once on a 401.
@@ -102,11 +115,25 @@ actor APIClient {
 
         let (respData, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError.noData }
-        guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.server(message: Self.message(from: respData, status: http.statusCode), status: http.statusCode)
+        }
 
         if respData.isEmpty, let empty = EmptyResponse() as? T { return empty }
         do { return try JSONDecoder().decode(T.self, from: respData) }
         catch { throw APIError.decoding }
+    }
+
+    /// Turn the server's error body into a readable sentence
+    /// (`{error,issues:[{message}]}` for validation, or `{message}` otherwise).
+    private static func message(from data: Data, status: Int) -> String {
+        struct Issue: Decodable { let message: String }
+        struct Body: Decodable { let message: String?; let issues: [Issue]? }
+        if let body = try? JSONDecoder().decode(Body.self, from: data) {
+            if let first = body.issues?.first { return first.message }
+            if let message = body.message { return message }
+        }
+        return "Request failed (\(status))."
     }
 }
 
