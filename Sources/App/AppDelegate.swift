@@ -49,6 +49,7 @@ extension AppDelegate: PKPushRegistryDelegate {
         }
     }
 
+    // Legacy delegate (iOS < 26.4): no metadata, so a VoIP push must always be reported.
     func pushRegistry(
         _ registry: PKPushRegistry,
         didReceiveIncomingPushWith payload: PKPushPayload,
@@ -56,12 +57,38 @@ extension AppDelegate: PKPushRegistryDelegate {
         completion: @escaping () -> Void
     ) {
         guard type == .voIP else { completion(); return }
-        let d = payload.dictionaryPayload
+        handleVoIPPush(payload.dictionaryPayload, mustReport: true, completion: completion)
+    }
+
+    // iOS 26.4+: the system tells us via `mustReport` whether this push must be reported to
+    // CallKit. It's NO when we're foreground, already on a call, or the push is stale — cases
+    // where the live socket handles delivery (invite) or there's nothing to dismiss (end), so
+    // we can skip reporting and avoid both a spurious ring and the contract violation.
+    @available(iOS 26.4, *)
+    func pushRegistry(
+        _ registry: PKPushRegistry,
+        didReceiveIncomingVoIPPushWith payload: PKPushPayload,
+        metadata: PKVoIPPushMetadata,
+        completion: @escaping () -> Void
+    ) {
+        handleVoIPPush(payload.dictionaryPayload, mustReport: metadata.mustReport, completion: completion)
+    }
+
+    private func handleVoIPPush(
+        _ d: [AnyHashable: Any],
+        mustReport: Bool,
+        completion: @escaping () -> Void
+    ) {
         if d["type"] as? String == "call.end" {
             let callId = d["callId"] as? String ?? ""
             APIClient.mobileDiagnostic(event: "pushkit.callEnd.received", callId: callId)
             MainActor.assumeIsolated {
-                CallKitManager.shared.handleRemoteCallEnded(callId: callId)
+                let dismissed = CallKitManager.shared.handleRemoteCallEnded(callId: callId)
+                // If the system insists this push be reported but there's no live call to
+                // dismiss, report-and-end so we don't get terminated.
+                if mustReport && !dismissed {
+                    CallKitManager.shared.reportEndedForCompliance(callId: callId)
+                }
             }
             completion()
             return
@@ -75,13 +102,17 @@ extension AppDelegate: PKPushRegistryDelegate {
             fromDisplayName: d["fromName"] as? String ?? "Incoming call",
             fromUserId: d["fromUserId"] as? String
         )
-        APIClient.mobileDiagnostic(event: "pushkit.received", callId: invite.id, detail: invite.kind)
-        // iOS requires reporting the call synchronously here (the registry runs on .main),
-        // otherwise the app can be terminated and future VoIP pushes blocked.
         MainActor.assumeIsolated {
-            CallKitManager.shared.reportIncoming(invite)
+            guard mustReport else {
+                APIClient.mobileDiagnostic(event: "pushkit.skippedNotMustReport", callId: invite.id)
+                completion()
+                return
+            }
+            APIClient.mobileDiagnostic(event: "pushkit.received", callId: invite.id, detail: invite.kind)
+            // iOS requires reporting the call synchronously here (the registry runs on .main),
+            // otherwise the app can be terminated and future VoIP pushes blocked.
+            CallKitManager.shared.reportIncoming(invite, completion: completion)
         }
-        completion()
     }
 }
 

@@ -49,10 +49,11 @@ final class CallKitManager: NSObject, ObservableObject {
 
     // MARK: Incoming (from socket or VoIP push)
 
-    func reportIncoming(_ invite: SocketService.CallInvite) {
+    func reportIncoming(_ invite: SocketService.CallInvite, completion: (() -> Void)? = nil) {
         APIClient.mobileDiagnostic(event: "callkit.reportIncoming", callId: invite.id, detail: invite.fromDisplayName)
         if recentlyEndedCallIds.contains(invite.id) {
             APIClient.mobileDiagnostic(event: "callkit.reportIncoming.ignoredEnded", callId: invite.id)
+            completion?()
             return
         }
         let uuid = uuid(for: invite.id)
@@ -62,6 +63,7 @@ final class CallKitManager: NSObject, ObservableObject {
                 callId: invite.id,
                 detail: uuid.uuidString
             )
+            completion?()
             return
         }
         pendingInvites[invite.id] = invite
@@ -78,6 +80,7 @@ final class CallKitManager: NSObject, ObservableObject {
             } else {
                 APIClient.mobileDiagnostic(event: "callkit.reportIncoming.ok", callId: invite.id)
             }
+            completion?()
         }
     }
 
@@ -209,6 +212,17 @@ final class CallKitManager: NSObject, ObservableObject {
         return map?.count == 1 ? map?.values.first : nil
     }
 
+    private func persistedUUID(for callId: String) -> UUID? {
+        let map = UserDefaults.standard.dictionary(forKey: uuidMapDefaultsKey) as? [String: String] ?? [:]
+        return map.first(where: { $0.value == callId }).flatMap { UUID(uuidString: $0.key) }
+    }
+
+    private func restorePersistedMapping(for callId: String) {
+        guard callIdToUUID[callId] == nil, let uuid = persistedUUID(for: callId) else { return }
+        callIdToUUID[callId] = uuid
+        uuidToCallId[uuid] = callId
+    }
+
     private func removePersistedCallId(for uuid: UUID) {
         var map = UserDefaults.standard.dictionary(forKey: uuidMapDefaultsKey) as? [String: String] ?? [:]
         map[uuid.uuidString] = nil
@@ -298,13 +312,41 @@ final class CallKitManager: NSObject, ObservableObject {
     }
 
     func handlePeerDeclined(callId: String) {
-        guard activeCall?.id == callId else { return }
-        finishCall(callId: callId, status: "Busy", notifyServer: false)
+        if activeCall?.id == callId {
+            finishCall(callId: callId, status: "Busy", notifyServer: false)
+        } else {
+            handleRemoteCallEnded(callId: callId)
+        }
     }
 
-    func handleRemoteCallEnded(callId: String) {
-        guard activeCall?.id == callId || pendingInvites[callId] != nil || callIdToUUID[callId] != nil else { return }
+    /// Tear down a call ended remotely. Returns true if a known call was actually dismissed,
+    /// so a VoIP `call.end` push can tell whether it still needs to satisfy `mustReport`.
+    @discardableResult
+    func handleRemoteCallEnded(callId: String) -> Bool {
+        restorePersistedMapping(for: callId)
+        guard activeCall?.id == callId || pendingInvites[callId] != nil || callIdToUUID[callId] != nil else {
+            return false
+        }
         finishCall(callId: callId, status: "Ended", notifyServer: false, dismissAfter: 500_000_000)
+        return true
+    }
+
+    /// Satisfy PushKit's `mustReport` contract for a `call.end` push that arrived with no live
+    /// call to dismiss (e.g. the invite push was missed): report a call to CallKit and end it
+    /// immediately. Prevents app termination on iOS 26.4+; only ever runs in that rare edge case.
+    func reportEndedForCompliance(callId: String) {
+        let uuid = uuid(for: callId)
+        let update = CXCallUpdate()
+        update.remoteHandle = CXHandle(type: .generic, value: pendingInvites[callId]?.fromDisplayName ?? "Call")
+        recentlyEndedCallIds.insert(callId)
+        APIClient.mobileDiagnostic(event: "callkit.reportEndedForCompliance", callId: callId)
+        provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.provider.reportCall(with: uuid, endedAt: Date(), reason: .remoteEnded)
+                self.clear(callId)
+            }
+        }
     }
 
     func handleMediaPeerDisconnected(callId: String) {
