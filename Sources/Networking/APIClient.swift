@@ -82,6 +82,18 @@ actor APIClient {
         try await post("/conversations/\(conversationId)/messages", body: ["body": body])
     }
 
+    func sendSticker(conversationId: String, stickerId: String) async throws -> Message {
+        try await post("/conversations/\(conversationId)/messages", body: ["stickerId": stickerId])
+    }
+
+    func recentCalls() async throws -> [RecentCall] { try await get("/calls") }
+
+    func stickers() async throws -> [Sticker] {
+        struct Catalog: Decodable { let stickers: [Sticker] }
+        let catalog: Catalog = try await get("/stickers")
+        return catalog.stickers
+    }
+
     func startCall(conversationId: String, kind: String) async throws -> CallSession {
         try await post("/calls", body: ["conversationId": conversationId, "kind": kind])
     }

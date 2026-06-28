@@ -31,9 +31,10 @@ struct WelcomeView: View {
 
             VStack(spacing: 10) {
                 Text("Talk. Chat. Connect.")
-                    .font(KlicFont.medium(20))
+                    .font(KlicFont.banger(34))
                     .foregroundStyle(KlicColor.textPrimary)
                     .multilineTextAlignment(.center)
+                    .tracking(0.5)
 
                 Text("Crystal-clear calls and instant messages,\nall in one place.")
                     .font(KlicFont.body())

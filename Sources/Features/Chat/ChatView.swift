@@ -19,6 +19,7 @@ struct ChatView: View {
     @State private var showPhotos = false
     @State private var showCamera = false
     @State private var showFileImporter = false
+    @State private var showStickers = false
     @State private var uploading = false
 
     private enum AttachAction { case photos, camera, file }
@@ -135,7 +136,8 @@ struct ChatView: View {
                             message: msg,
                             isMine: isMine,
                             isFirst: isFirst,
-                            isLast: isLast
+                            isLast: isLast,
+                            onCallBack: { kind in Task { await startCall(kind: kind) } }
                         )
                         .id(msg.id)
                     }
@@ -194,6 +196,14 @@ struct ChatView: View {
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first { Task { await sendFile(url) } }
         }
+        .sheet(isPresented: $showStickers) {
+            StickerPicker { id in
+                showStickers = false
+                Task { await sendSticker(id) }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
     }
 
     private var normalComposer: some View {
@@ -201,6 +211,15 @@ struct ChatView: View {
             Button { showAttachMenu = true } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(KlicColor.textMuted)
+                    .frame(width: 44, height: 44)
+                    .background(KlicColor.surfaceRaised, in: Circle())
+            }
+            .disabled(uploading)
+
+            Button { isComposerFocused = false; showStickers = true } label: {
+                Image(systemName: "face.smiling")
+                    .font(.system(size: 19, weight: .regular))
                     .foregroundStyle(KlicColor.textMuted)
                     .frame(width: 44, height: 44)
                     .background(KlicColor.surfaceRaised, in: Circle())
@@ -289,6 +308,13 @@ struct ChatView: View {
         guard !body.isEmpty else { return }
         draft = ""
         if let msg = try? await APIClient.shared.send(conversationId: conversation.id, body: body) {
+            messages.append(msg)
+            scrollToBottom()
+        }
+    }
+
+    private func sendSticker(_ id: String) async {
+        if let msg = try? await APIClient.shared.sendSticker(conversationId: conversation.id, stickerId: id) {
             messages.append(msg)
             scrollToBottom()
         }
@@ -420,12 +446,23 @@ private struct MessageBubble: View {
     let isMine: Bool
     let isFirst: Bool
     let isLast: Bool
+    var onCallBack: (String) -> Void = { _ in }
 
     private var topRadius:    CGFloat { isFirst ? 18 : (isMine ? 18 : 4) }
     private var bottomRadius: CGFloat { isLast  ? 18 : (isMine ? 4  : 18) }
     private var tailRadius:   CGFloat { isLast  ? 4  : 18 }
 
     var body: some View {
+        if message.isCallEvent, let call = message.call {
+            CallEventRow(call: call, outgoing: isMine, time: shortTime(message.createdAt), onCallBack: onCallBack)
+        } else if message.isSticker, let stickerId = message.stickerId {
+            StickerMessageView(stickerId: stickerId, isMine: isMine, time: isLast ? shortTime(message.createdAt) : nil)
+        } else {
+            standardBubble
+        }
+    }
+
+    private var standardBubble: some View {
         HStack(alignment: .bottom, spacing: 6) {
             if isMine { Spacer(minLength: 56) }
 
