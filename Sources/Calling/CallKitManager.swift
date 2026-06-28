@@ -43,12 +43,23 @@ final class CallKitManager: NSObject, ObservableObject {
     // MARK: Incoming (from socket or VoIP push)
 
     func reportIncoming(_ invite: SocketService.CallInvite) {
+        APIClient.mobileDiagnostic(event: "callkit.reportIncoming", callId: invite.id, detail: invite.fromDisplayName)
         let uuid = uuid(for: invite.id)
         pendingInvites[invite.id] = invite
         let update = CXCallUpdate()
         update.remoteHandle = CXHandle(type: .generic, value: invite.fromDisplayName)
         update.hasVideo = invite.kind == "VIDEO"
-        provider.reportNewIncomingCall(with: uuid, update: update) { _ in }
+        provider.reportNewIncomingCall(with: uuid, update: update) { error in
+            if let error {
+                APIClient.mobileDiagnostic(
+                    event: "callkit.reportIncoming.failed",
+                    callId: invite.id,
+                    detail: String(describing: error)
+                )
+            } else {
+                APIClient.mobileDiagnostic(event: "callkit.reportIncoming.ok", callId: invite.id)
+            }
+        }
     }
 
     // MARK: Outgoing (user taps call)
@@ -153,14 +164,22 @@ extension CallKitManager: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         Task { @MainActor in
-            guard let callId = uuidToCallId[action.uuid] else { action.fail(); return }
+            APIClient.mobileDiagnostic(event: "callkit.answer.enter", detail: action.uuid.uuidString)
+            guard let callId = uuidToCallId[action.uuid] else {
+                APIClient.mobileDiagnostic(event: "callkit.answer.missingCallId", detail: action.uuid.uuidString)
+                action.fail()
+                return
+            }
+            APIClient.mobileDiagnostic(event: "callkit.answer.fulfill", callId: callId)
             action.fulfill()
             statusText = "Connecting..."
             do {
                 // Everything needed to join comes from the token response, so answering
                 // works even if the original invite is no longer in memory.
                 print("CallKit answer: requesting join token for \(callId)")
+                APIClient.mobileDiagnostic(event: "callkit.answer.token.start", callId: callId)
                 let session = try await APIClient.shared.joinToken(callId: callId)
+                APIClient.mobileDiagnostic(event: "callkit.answer.token.ok", callId: callId)
                 let invite = pendingInvites[callId]
                 let kind = invite?.kind ?? session.kind ?? "AUDIO"
                 let isVideo = kind == "VIDEO"
@@ -170,12 +189,19 @@ extension CallKitManager: CXProviderDelegate {
                     id: callId, roomName: session.roomName, livekitUrl: session.livekitUrl,
                     token: session.token, kind: kind, peerName: peerName, isOutgoing: false
                 )
+                APIClient.mobileDiagnostic(event: "callkit.answer.livekit.start", callId: callId)
                 try await CallService.shared.join(url: session.livekitUrl, token: session.token, video: isVideo)
+                APIClient.mobileDiagnostic(event: "callkit.answer.livekit.ok", callId: callId)
                 SocketService.shared.emit("call:accept", ["callId": callId])
                 CallActivityController.start(peerName: peerName, isVideo: isVideo)
                 CallActivityController.update(status: "Connected", muted: false, isVideo: isVideo)
             } catch {
                 print("CallKit answer failed for \(callId): \(error)")
+                APIClient.mobileDiagnostic(
+                    event: "callkit.answer.failed",
+                    callId: callId,
+                    detail: String(describing: error)
+                )
                 SocketService.shared.emit("call:decline", ["callId": callId])
                 finishCall(callId: callId, status: "Call failed", notifyServer: false, dismissAfter: 500_000_000)
             }
@@ -201,6 +227,7 @@ extension CallKitManager: CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         Task { @MainActor in
             let id = activeCall?.id ?? uuidToCallId[action.uuid]
+            APIClient.mobileDiagnostic(event: "callkit.end.enter", callId: id, detail: action.uuid.uuidString)
             if let id {
                 if activeCall == nil, pendingInvites[id] != nil {
                     SocketService.shared.emit("call:decline", ["callId": id])
