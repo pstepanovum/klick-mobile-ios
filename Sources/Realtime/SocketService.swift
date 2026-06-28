@@ -17,11 +17,20 @@ final class SocketService: ObservableObject {
     /// Most recent read / delivered receipt — chats apply these to their messages.
     @Published var lastRead: Receipt?
     @Published var lastDelivered: Receipt?
+    /// When a peer last signalled they're typing, keyed by conversation id (cleared on stop).
+    @Published var typingByConversation: [String: Date] = [:]
+    /// Most recent reaction / delete events — the open chat merges these into its messages.
+    @Published var lastReaction: ReactionUpdate?
+    @Published var lastDeleted: DeletedUpdate?
 
     private var myUserId: String?
+    /// Per-conversation token used to invalidate a pending typing auto-clear.
+    private var typingTokens: [String: UUID] = [:]
 
     struct PresenceInfo: Equatable { var online: Bool; var lastSeen: Date? }
     struct Receipt: Equatable { let conversationId: String; let userId: String; let at: Date }
+    struct ReactionUpdate: Equatable { let conversationId: String; let messageId: String; let reactions: [Reaction] }
+    struct DeletedUpdate: Equatable { let conversationId: String; let messageId: String }
 
     struct CallInvite: Identifiable {
         let id: String          // callId
@@ -78,6 +87,46 @@ final class SocketService: ObservableObject {
                   let userId = dict["userId"] as? String,
                   let at = (dict["deliveredAt"] as? String).flatMap(Self.parseDate) else { return }
             self?.lastDelivered = Receipt(conversationId: conversationId, userId: userId, at: at)
+        }
+        socket.on("typing") { [weak self] data, _ in
+            guard let self,
+                  let dict = data.first as? [String: Any],
+                  let conversationId = dict["conversationId"] as? String else { return }
+            let isTyping = dict["isTyping"] as? Bool ?? false
+            DispatchQueue.main.async {
+                if isTyping {
+                    let token = UUID()
+                    self.typingTokens[conversationId] = token
+                    self.typingByConversation[conversationId] = Date()
+                    // Auto-clear if no further signal arrives (peer stopped without sending).
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                        guard self.typingTokens[conversationId] == token else { return }
+                        self.typingByConversation[conversationId] = nil
+                    }
+                } else {
+                    self.typingTokens[conversationId] = UUID() // invalidate any pending clear
+                    self.typingByConversation[conversationId] = nil
+                }
+            }
+        }
+        socket.on("message:reaction") { [weak self] data, _ in
+            guard let self,
+                  let dict = data.first as? [String: Any],
+                  let conversationId = dict["conversationId"] as? String,
+                  let messageId = dict["messageId"] as? String else { return }
+            let raw = dict["reactions"] as? [[String: Any]] ?? []
+            let reactions: [Reaction] = raw.compactMap { r in
+                guard let emoji = r["emoji"] as? String, let count = r["count"] as? Int else { return nil }
+                return Reaction(emoji: emoji, count: count, mine: r["mine"] as? Bool ?? false)
+            }
+            self.lastReaction = ReactionUpdate(conversationId: conversationId, messageId: messageId, reactions: reactions)
+        }
+        socket.on("message:deleted") { [weak self] data, _ in
+            guard let self,
+                  let dict = data.first as? [String: Any],
+                  let conversationId = dict["conversationId"] as? String,
+                  let messageId = dict["messageId"] as? String else { return }
+            self.lastDeleted = DeletedUpdate(conversationId: conversationId, messageId: messageId)
         }
         socket.on("call:invite") { [weak self] data, _ in
             guard let dict = data.first as? [String: Any] else { return }

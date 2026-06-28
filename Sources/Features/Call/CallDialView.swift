@@ -87,10 +87,7 @@ private struct RecentCallRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Circle()
-                .fill(KlicColor.surfaceRaised)
-                .frame(width: 50, height: 50)
-                .overlay(Icon(.user, size: 20, color: KlicColor.textMuted))
+            AvatarView(url: call.peer?.avatarUrl, name: call.peer?.displayName ?? "?", size: 50)
             VStack(alignment: .leading, spacing: 2) {
                 Text(call.peer?.displayName ?? "Unknown")
                     .font(KlicFont.headline())
@@ -138,10 +135,7 @@ private struct FriendCallRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Circle()
-                .fill(KlicColor.surfaceRaised)
-                .frame(width: 50, height: 50)
-                .overlay(Icon(.user, size: 20, color: KlicColor.textMuted))
+            AvatarView(url: friend.avatarUrl, name: friend.displayName, size: 50)
             VStack(alignment: .leading, spacing: 2) {
                 Text(friend.displayName)
                     .font(KlicFont.headline())

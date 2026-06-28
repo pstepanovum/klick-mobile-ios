@@ -78,12 +78,30 @@ actor APIClient {
         try await get("/conversations/\(conversationId)/messages")
     }
 
-    func send(conversationId: String, body: String) async throws -> Message {
-        try await post("/conversations/\(conversationId)/messages", body: ["body": body])
+    func send(conversationId: String, body: String, replyToId: String? = nil) async throws -> Message {
+        var payload: [String: Any] = ["body": body]
+        if let replyToId { payload["replyToId"] = replyToId }
+        return try await post("/conversations/\(conversationId)/messages", body: payload)
     }
 
-    func sendSticker(conversationId: String, stickerId: String) async throws -> Message {
-        try await post("/conversations/\(conversationId)/messages", body: ["stickerId": stickerId])
+    func sendSticker(conversationId: String, stickerId: String, replyToId: String? = nil) async throws -> Message {
+        var payload: [String: Any] = ["stickerId": stickerId]
+        if let replyToId { payload["replyToId"] = replyToId }
+        return try await post("/conversations/\(conversationId)/messages", body: payload)
+    }
+
+    /// Toggle an emoji reaction on a message; returns the message's new aggregate.
+    @discardableResult
+    func react(conversationId: String, messageId: String, emoji: String) async throws -> [Reaction] {
+        struct R: Decodable { let reactions: [Reaction] }
+        let r: R = try await post("/conversations/\(conversationId)/messages/\(messageId)/reactions",
+                                  body: ["emoji": emoji])
+        return r.reactions
+    }
+
+    /// Delete a message for everyone (sender-only server-side).
+    func deleteForEveryone(conversationId: String, messageId: String) async throws {
+        let _: EmptyResponse = try await delete("/conversations/\(conversationId)/messages/\(messageId)?scope=everyone")
     }
 
     func recentCalls() async throws -> [RecentCall] { try await get("/calls") }
@@ -100,6 +118,22 @@ actor APIClient {
 
     func joinToken(callId: String) async throws -> CallSession {
         try await post("/calls/\(callId)/token", body: [:])
+    }
+
+    func mediaJoined(callId: String) async throws -> EmptyResponse {
+        try await post("/calls/\(callId)/media-joined", body: [:])
+    }
+
+    func declineCall(callId: String) async throws -> EmptyResponse {
+        try await post("/calls/\(callId)/decline", body: [:])
+    }
+
+    func cancelCall(callId: String) async throws -> EmptyResponse {
+        try await post("/calls/\(callId)/cancel", body: [:])
+    }
+
+    func failCall(callId: String) async throws -> EmptyResponse {
+        try await post("/calls/\(callId)/fail", body: [:])
     }
 
     func endCall(callId: String) async throws -> EmptyResponse {
@@ -176,9 +210,10 @@ actor APIClient {
     }
 
     /// Step 3: send the message referencing the uploaded object key(s).
-    func sendMessage(conversationId: String, body: String?, attachments: [AttachmentDraft]) async throws -> Message {
+    func sendMessage(conversationId: String, body: String?, attachments: [AttachmentDraft], replyToId: String? = nil) async throws -> Message {
         var payload: [String: Any] = [:]
         if let body, !body.isEmpty { payload["body"] = body }
+        if let replyToId { payload["replyToId"] = replyToId }
         payload["attachments"] = attachments.map { a -> [String: Any] in
             var d: [String: Any] = ["key": a.key, "kind": a.kind, "contentType": a.contentType, "byteSize": a.byteSize]
             if let w = a.width { d["width"] = w }
@@ -212,6 +247,10 @@ actor APIClient {
     private func patch<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
         let data = try JSONSerialization.data(withJSONObject: body)
         return try await request(path, method: "PATCH", body: data, authed: true)
+    }
+
+    private func delete<T: Decodable>(_ path: String) async throws -> T {
+        try await request(path, method: "DELETE", body: nil, authed: true)
     }
 
     private func request<T: Decodable>(

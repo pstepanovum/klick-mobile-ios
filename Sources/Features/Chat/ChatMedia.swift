@@ -227,7 +227,7 @@ private struct ImageAttachmentView: View {
             switch phase {
             case .success(let image): image.resizable().scaledToFill()
             case .failure: KlicColor.surfaceRaised.overlay(Image(systemName: "photo").foregroundStyle(KlicColor.textMuted))
-            default: KlicColor.surfaceRaised.overlay(ProgressView())
+            default: KlicColor.surfaceRaised.overlay(LoadingCircle())
             }
         }
         .frame(width: size.width, height: size.height)
@@ -337,30 +337,85 @@ private struct FileAttachmentView: View {
     }
 }
 
-/// Full-screen image / video viewer.
+/// Full-screen, centered image / video viewer with pinch-zoom, double-tap zoom,
+/// and swipe-to-dismiss (images).
 struct MediaViewer: View {
     let url: String
     let isVideo: Bool
     @Environment(\.dismiss) private var dismiss
 
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    @State private var dragDismiss: CGFloat = 0
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .opacity(1 - min(Double(abs(dragDismiss)) / 500, 0.7))
+                .ignoresSafeArea()
+
             if let u = URL(string: url) {
                 if isVideo {
                     VideoPlayer(player: AVPlayer(url: u)).ignoresSafeArea()
                 } else {
                     AsyncImage(url: u) { image in
                         image.resizable().scaledToFit()
-                    } placeholder: { ProgressView().tint(.white) }
+                    } placeholder: { LoadingCircle(color: .white) }
+                    .scaleEffect(scale)
+                    .offset(x: offset.width, y: offset.height + dragDismiss)
+                    .gesture(magnification)
+                    .simultaneousGesture(dragGesture)
+                    .onTapGesture(count: 2) { withAnimation(.spring(response: 0.3)) { toggleZoom() } }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .ignoresSafeArea()
                 }
             }
+
             Button { dismiss() } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 30)).foregroundStyle(.white.opacity(0.9))
                     .padding()
             }
+        }
+    }
+
+    private var magnification: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in scale = max(1, min(lastScale * value, 5)) }
+            .onEnded { _ in
+                lastScale = scale
+                if scale <= 1 { withAnimation { offset = .zero; lastOffset = .zero } }
+            }
+    }
+
+    private var dragGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if scale > 1 {
+                    offset = CGSize(width: lastOffset.width + value.translation.width,
+                                    height: lastOffset.height + value.translation.height)
+                } else {
+                    dragDismiss = value.translation.height
+                }
+            }
+            .onEnded { _ in
+                if scale > 1 {
+                    lastOffset = offset
+                } else if abs(dragDismiss) > 140 {
+                    dismiss()
+                } else {
+                    withAnimation(.spring()) { dragDismiss = 0 }
+                }
+            }
+    }
+
+    private func toggleZoom() {
+        if scale > 1 {
+            scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
+        } else {
+            scale = 2.5; lastScale = 2.5
         }
     }
 }

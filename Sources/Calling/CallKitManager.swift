@@ -90,7 +90,7 @@ final class CallKitManager: NSObject, ObservableObject {
                 callId: session.callId,
                 detail: peerName
             )
-            Task { try? await APIClient.shared.endCall(callId: session.callId) }
+            Task { try? await APIClient.shared.cancelCall(callId: session.callId) }
             return
         }
         let uuid = uuid(for: session.callId)
@@ -228,8 +228,7 @@ final class CallKitManager: NSObject, ObservableObject {
             await MainActor.run {
                 guard let self, self.activeCall?.id == callId, self.statusText != "Connected" else { return }
                 self.statusText = "No answer"
-                SocketService.shared.emit("call:cancel", ["callId": callId])
-                Task { try? await APIClient.shared.endCall(callId: callId) }
+                Task { try? await APIClient.shared.cancelCall(callId: callId) }
                 if let uuid = self.callIdToUUID[callId] {
                     self.controller.request(CXTransaction(action: CXEndCallAction(call: uuid))) { _ in }
                 }
@@ -237,8 +236,20 @@ final class CallKitManager: NSObject, ObservableObject {
         }
     }
 
+    private func finishCallOnServer(callId: String, wasOutgoing: Bool, wasConnected: Bool) async {
+        if wasConnected {
+            try? await APIClient.shared.endCall(callId: callId)
+        } else if wasOutgoing {
+            try? await APIClient.shared.cancelCall(callId: callId)
+        } else {
+            try? await APIClient.shared.declineCall(callId: callId)
+        }
+    }
+
     private func finishCall(callId: String, status: String, notifyServer: Bool, dismissAfter seconds: UInt64 = 1_500_000_000) {
         guard !finishingCallIds.contains(callId) else { return }
+        let wasOutgoing = activeCall?.id == callId ? activeCall?.isOutgoing == true : false
+        let wasConnected = activeCall?.id == callId && statusText == "Connected"
         finishingCallIds.insert(callId)
         recentlyEndedCallIds.insert(callId)
         cancelRingTimeout(callId)
@@ -246,7 +257,9 @@ final class CallKitManager: NSObject, ObservableObject {
         if activeCall?.id == callId {
             activeCall = nil
         }
-        if notifyServer { Task { try? await APIClient.shared.endCall(callId: callId) } }
+        if notifyServer {
+            Task { await self.finishCallOnServer(callId: callId, wasOutgoing: wasOutgoing, wasConnected: wasConnected) }
+        }
         endSystemCall(callId: callId)
         Task {
             await CallService.shared.leave()
@@ -267,10 +280,11 @@ final class CallKitManager: NSObject, ObservableObject {
     /// without touching the shared media session / Live Activity — the call we're switching
     /// to reconfigures those itself, so doing it here would race and kill the new call's UI.
     private func endAbandonedCall(_ callId: String) {
+        let wasOutgoing = activeCall?.id == callId ? activeCall?.isOutgoing == true : true
+        let wasConnected = activeCall?.id == callId && statusText == "Connected"
         recentlyEndedCallIds.insert(callId)
         cancelRingTimeout(callId)
-        SocketService.shared.emit("call:cancel", ["callId": callId])
-        Task { try? await APIClient.shared.endCall(callId: callId) }
+        Task { await self.finishCallOnServer(callId: callId, wasOutgoing: wasOutgoing, wasConnected: wasConnected) }
         endSystemCall(callId: callId)
         clear(callId)
         if activeCall?.id == callId { activeCall = nil }
@@ -285,7 +299,7 @@ final class CallKitManager: NSObject, ObservableObject {
 
     func handlePeerDeclined(callId: String) {
         guard activeCall?.id == callId else { return }
-        finishCall(callId: callId, status: "Busy", notifyServer: true)
+        finishCall(callId: callId, status: "Busy", notifyServer: false)
     }
 
     func handleRemoteCallEnded(callId: String) {
@@ -296,7 +310,7 @@ final class CallKitManager: NSObject, ObservableObject {
     func handleMediaPeerDisconnected(callId: String) {
         guard activeCall?.id == callId else { return }
         APIClient.mobileDiagnostic(event: "callkit.mediaPeerDisconnected.end", callId: callId)
-        finishCall(callId: callId, status: "Ended", notifyServer: false, dismissAfter: 500_000_000)
+        finishCall(callId: callId, status: "Ended", notifyServer: true, dismissAfter: 500_000_000)
     }
 
     func enableCameraFromSystemVideoButtonIfNeeded() {
@@ -319,9 +333,11 @@ extension CallKitManager: CXProviderDelegate {
         Task { @MainActor in
             APIClient.mobileDiagnostic(event: "callkit.provider.reset", callId: activeCall?.id)
             cancelAllRingTimeouts()
-            if let callId = activeCall?.id {
-                recentlyEndedCallIds.insert(callId)
-                clear(callId)
+            if let call = activeCall {
+                let wasConnected = statusText == "Connected"
+                recentlyEndedCallIds.insert(call.id)
+                await finishCallOnServer(callId: call.id, wasOutgoing: call.isOutgoing, wasConnected: wasConnected)
+                clear(call.id)
             }
             activeCall = nil
             await CallService.shared.leave()
@@ -370,9 +386,9 @@ extension CallKitManager: CXProviderDelegate {
                     token: session.token,
                     video: isVideo
                 )
+                try await APIClient.shared.mediaJoined(callId: callId)
                 statusText = "Connected"
                 APIClient.mobileDiagnostic(event: "callkit.answer.livekit.ok", callId: callId)
-                SocketService.shared.emit("call:accept", ["callId": callId])
                 CallActivityController.start(peerName: peerName, isVideo: isVideo)
                 CallActivityController.update(status: "Connected", muted: false, isVideo: isVideo)
             } catch {
@@ -390,7 +406,7 @@ extension CallKitManager: CXProviderDelegate {
                         callId: callId,
                         detail: String(describing: error)
                     )
-                    SocketService.shared.emit("call:decline", ["callId": callId])
+                    try? await APIClient.shared.failCall(callId: callId)
                     finishCall(callId: callId, status: "Call failed", notifyServer: false, dismissAfter: 500_000_000)
                 }
             }
@@ -409,8 +425,10 @@ extension CallKitManager: CXProviderDelegate {
                     token: call.token,
                     video: call.isVideo
                 )
+                try await APIClient.shared.mediaJoined(callId: call.id)
             } catch {
-                SocketService.shared.emit("call:cancel", ["callId": call.id])
+                try? await APIClient.shared.cancelCall(callId: call.id)
+                finishCall(callId: call.id, status: "Call failed", notifyServer: false, dismissAfter: 500_000_000)
                 return
             }
             CallActivityController.start(peerName: call.peerName, isVideo: call.isVideo)
@@ -425,12 +443,14 @@ extension CallKitManager: CXProviderDelegate {
             if let id {
                 recentlyEndedCallIds.insert(id)
                 if activeCall == nil, pendingInvites[id] != nil {
-                    SocketService.shared.emit("call:decline", ["callId": id])
+                    try? await APIClient.shared.declineCall(callId: id)
                 } else if statusText != "Connected" {
-                    SocketService.shared.emit("call:cancel", ["callId": id])
-                    try? await APIClient.shared.endCall(callId: id)
+                    if activeCall?.id == id && activeCall?.isOutgoing == true {
+                        try? await APIClient.shared.cancelCall(callId: id)
+                    } else {
+                        try? await APIClient.shared.declineCall(callId: id)
+                    }
                 } else {
-                    SocketService.shared.emit("call:end", ["callId": id])
                     try? await APIClient.shared.endCall(callId: id)
                 }
                 endSystemCall(callId: id)

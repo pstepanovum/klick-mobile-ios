@@ -57,9 +57,24 @@ struct Attachment: Codable, Identifiable, Hashable {
 /// Chat record of a finished call, carried on a CALL_EVENT message.
 struct CallEvent: Codable, Hashable {
     let kind: String            // "AUDIO" | "VIDEO"
-    let outcome: String         // "completed" | "missed" | "declined" | "canceled"
+    let outcome: String         // "completed" | "missed" | "declined" | "canceled" | "failed"
     var durationMs: Int?
     var isVideo: Bool { kind == "VIDEO" }
+}
+
+/// Aggregated emoji reaction on a message (one entry per distinct emoji).
+struct Reaction: Codable, Hashable {
+    let emoji: String
+    let count: Int
+    let mine: Bool              // whether *I* reacted with this emoji
+}
+
+/// Compact quote of the message a reply points at.
+struct ReplyPreview: Codable, Hashable {
+    let id: String
+    let senderId: String
+    let kind: String
+    let preview: String        // truncated body or a kind label ("📷 Photo", …)
 }
 
 struct Message: Codable, Identifiable, Hashable {
@@ -74,13 +89,17 @@ struct Message: Codable, Identifiable, Hashable {
     var stickerId: String?       // STICKER messages
     var stickerUrl: String?
     var call: CallEvent?         // CALL_EVENT messages
+    var replyTo: ReplyPreview?   // the quoted message, when this is a reply
+    var reactions: [Reaction] = []
+    var deletedAt: String?       // set when deleted for everyone
 
     var isCallEvent: Bool { kind == "CALL_EVENT" }
     var isSticker: Bool { kind == "STICKER" }
+    var isDeleted: Bool { deletedAt != nil }
 
     enum CodingKeys: String, CodingKey {
         case id, conversationId, senderId, body, kind, createdAt, attachments, status
-        case stickerId, stickerUrl, call
+        case stickerId, stickerUrl, call, replyTo, reactions, deletedAt
     }
 
     // Tolerant decode (body/kind may be empty; attachments absent on older payloads).
@@ -97,16 +116,21 @@ struct Message: Codable, Identifiable, Hashable {
         stickerId = try? c.decode(String.self, forKey: .stickerId)
         stickerUrl = try? c.decode(String.self, forKey: .stickerUrl)
         call = try? c.decode(CallEvent.self, forKey: .call)
+        replyTo = try? c.decode(ReplyPreview.self, forKey: .replyTo)
+        reactions = (try? c.decode([Reaction].self, forKey: .reactions)) ?? []
+        deletedAt = try? c.decode(String.self, forKey: .deletedAt)
     }
 
     // Convenience init so building a Message locally stays ergonomic.
     init(id: String, conversationId: String, senderId: String, body: String,
          kind: String, createdAt: String, attachments: [Attachment] = [], status: String? = nil,
-         stickerId: String? = nil, stickerUrl: String? = nil, call: CallEvent? = nil) {
+         stickerId: String? = nil, stickerUrl: String? = nil, call: CallEvent? = nil,
+         replyTo: ReplyPreview? = nil, reactions: [Reaction] = [], deletedAt: String? = nil) {
         self.id = id; self.conversationId = conversationId; self.senderId = senderId
         self.body = body; self.kind = kind; self.createdAt = createdAt
         self.attachments = attachments; self.status = status
         self.stickerId = stickerId; self.stickerUrl = stickerUrl; self.call = call
+        self.replyTo = replyTo; self.reactions = reactions; self.deletedAt = deletedAt
     }
 }
 
@@ -116,7 +140,7 @@ struct RecentCall: Codable, Identifiable {
     let conversationId: String
     let kind: String
     let outgoing: Bool
-    let outcome: String         // "completed" | "missed"
+    let outcome: String         // "completed" | "missed" | "declined" | "canceled" | "failed"
     let startedAt: String
     var durationMs: Int?
     var peer: Peer?

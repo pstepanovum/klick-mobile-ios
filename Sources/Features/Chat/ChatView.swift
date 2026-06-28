@@ -22,21 +22,45 @@ struct ChatView: View {
     @State private var showStickers = false
     @State private var uploading = false
 
+    // Reply / long-press menu / local-delete state.
+    @State private var replyingTo: Message?
+    @State private var menuTarget: Message?
+    @State private var deleteTarget: Message?
+    @State private var hiddenIds: Set<String> = []
+    @State private var lastTypingSent = Date.distantPast
+
     private enum AttachAction { case photos, camera, file }
     @State private var pendingAttach: AttachAction?
 
     var title: String { conversation.members.first?.displayName ?? "Chat" }
     var myId: String? { session.currentUser?.id }
 
+    /// Messages minus anything the user deleted just for themselves (local-only).
+    private var visibleMessages: [Message] { messages.filter { !hiddenIds.contains($0.id) } }
+
+    /// Whether the peer is currently typing in this conversation (auto-expires).
+    private var peerIsTyping: Bool {
+        guard let at = socket.typingByConversation[conversation.id] else { return false }
+        return Date().timeIntervalSince(at) < 6
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             messageList
+            if let target = replyingTo {
+                ReplyComposerBar(
+                    authorName: target.senderId == myId ? "yourself" : title,
+                    preview: previewText(for: target),
+                    onCancel: { withAnimation { replyingTo = nil } }
+                )
+            }
             composer
         }
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(KlicColor.background.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .principal) { chatHeader }
             ToolbarItem(placement: .topBarTrailing) {
@@ -50,16 +74,68 @@ struct ChatView: View {
                 }
             }
         }
-        .task { await load(); scrollToBottom() }
+        .overlay {
+            if let target = menuTarget {
+                MessageActionsOverlay(
+                    message: target,
+                    isMine: target.senderId == myId,
+                    peerName: title,
+                    onReact: { emoji in
+                        Task { await react(target, emoji: emoji) }
+                        withAnimation(.easeOut(duration: 0.15)) { menuTarget = nil }
+                    },
+                    onReply: { replyingTo = target; isComposerFocused = true },
+                    onCopy: { UIPasteboard.general.string = target.body },
+                    onDelete: { deleteTarget = target },
+                    onDismiss: { withAnimation(.easeOut(duration: 0.15)) { menuTarget = nil } }
+                )
+                .transition(.opacity)
+            }
+        }
+        .confirmationDialog("Delete message", isPresented: deleteDialogBinding, titleVisibility: .visible) {
+            Button("Delete for me", role: .destructive) { if let m = deleteTarget { deleteForMe(m) }; dismissMenu() }
+            if deleteTarget?.senderId == myId {
+                Button("Delete for everyone", role: .destructive) {
+                    if let m = deleteTarget { Task { await deleteEveryone(m) } }; dismissMenu()
+                }
+            }
+            Button("Cancel", role: .cancel) { dismissMenu() }
+        }
+        .task { hiddenIds = Self.loadHidden(conversation.id); await load(); scrollToBottom() }
         .onAppear { isComposerFocused = true }
+        .onDisappear { emitTyping(false) }
+        .onChange(of: draft) { _, value in emitTyping(!value.trimmingCharacters(in: .whitespaces).isEmpty) }
+        .onChange(of: isComposerFocused) { _, focused in if focused { scrollToBottom() } }
         .onReceive(socket.$lastMessage.compactMap { $0 }) { msg in
             guard msg.conversationId == conversation.id else { return }
-            messages.append(msg)
+            // Upsert by id — the server echoes our own sends back for multi-device sync.
+            if let idx = messages.firstIndex(where: { $0.id == msg.id }) { messages[idx] = msg }
+            else { messages.append(msg) }
             markRead()
             scrollToBottom()
         }
         .onReceive(socket.$lastRead.compactMap { $0 }) { applyReceipt($0, status: "read") }
         .onReceive(socket.$lastDelivered.compactMap { $0 }) { applyReceipt($0, status: "delivered") }
+        .onReceive(socket.$lastReaction.compactMap { $0 }) { update in
+            guard update.conversationId == conversation.id,
+                  let idx = messages.firstIndex(where: { $0.id == update.messageId }) else { return }
+            messages[idx].reactions = update.reactions
+        }
+        .onReceive(socket.$lastDeleted.compactMap { $0 }) { update in
+            guard update.conversationId == conversation.id,
+                  let idx = messages.firstIndex(where: { $0.id == update.messageId }) else { return }
+            messages[idx].deletedAt = ISO8601DateFormatter().string(from: Date())
+            messages[idx].reactions = []
+        }
+    }
+
+    private var deleteDialogBinding: Binding<Bool> {
+        Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })
+    }
+
+    private func dismissMenu() {
+        deleteTarget = nil
+        withAnimation(.easeOut(duration: 0.15)) { menuTarget = nil }
     }
 
     // Tappable header → the peer's profile, with live presence underneath the name.
@@ -123,12 +199,13 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(Array(messages.enumerated()), id: \.element.id) { idx, msg in
+                    let items = visibleMessages
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, msg in
                         let isMine = msg.senderId == myId
-                        let isFirst = idx == 0 || messages[idx - 1].senderId != msg.senderId
-                        let isLast  = idx == messages.count - 1 || messages[idx + 1].senderId != msg.senderId
+                        let isFirst = idx == 0 || items[idx - 1].senderId != msg.senderId
+                        let isLast  = idx == items.count - 1 || items[idx + 1].senderId != msg.senderId
 
-                        if showDateSeparator(at: idx) {
+                        if idx == 0 || !sameDay(items[idx - 1].createdAt, msg.createdAt) {
                             DateSeparator(dateString: msg.createdAt)
                         }
 
@@ -137,17 +214,28 @@ struct ChatView: View {
                             isMine: isMine,
                             isFirst: isFirst,
                             isLast: isLast,
-                            onCallBack: { kind in Task { await startCall(kind: kind) } }
+                            replyAuthorName: msg.replyTo.map { $0.senderId == myId ? "You" : title } ?? "",
+                            onCallBack: { kind in Task { await startCall(kind: kind) } },
+                            onLongPress: { withAnimation(.easeIn(duration: 0.15)) { menuTarget = msg } },
+                            onReactionTap: { emoji in Task { await react(msg, emoji: emoji) } }
                         )
                         .id(msg.id)
+                    }
+                    if peerIsTyping {
+                        HStack { TypingDots(); Spacer(minLength: 56) }
+                            .padding(.vertical, 1)
+                            .id("typing-indicator")
+                            .transition(.opacity)
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
             }
+            .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.immediately)
             .onAppear { scrollProxy = proxy }
+            .onChange(of: peerIsTyping) { _, typing in if typing { scrollToBottom() } }
         }
     }
 
@@ -217,24 +305,25 @@ struct ChatView: View {
             }
             .disabled(uploading)
 
-            Button { isComposerFocused = false; showStickers = true } label: {
-                Image(systemName: "face.smiling")
-                    .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(KlicColor.textMuted)
-                    .frame(width: 44, height: 44)
-                    .background(KlicColor.surfaceRaised, in: Circle())
+            // Input pill with the emoji/sticker button tucked inside on the right.
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Message", text: $draft, axis: .vertical)
+                    .lineLimit(1...5)
+                    .font(KlicFont.body())
+                    .foregroundStyle(KlicColor.textPrimary)
+                    .tint(KlicColor.primary)
+                    .focused($isComposerFocused)
+                Button { isComposerFocused = false; showStickers = true } label: {
+                    Image(systemName: "face.smiling")
+                        .font(.system(size: 21, weight: .regular))
+                        .foregroundStyle(KlicColor.textMuted)
+                }
+                .disabled(uploading)
+                .padding(.bottom, 1)
             }
-            .disabled(uploading)
-
-            TextField("Message", text: $draft, axis: .vertical)
-                .lineLimit(1...5)
-                .font(KlicFont.body())
-                .foregroundStyle(KlicColor.textPrimary)
-                .tint(KlicColor.primary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(KlicColor.surfaceRaised, in: RoundedRectangle(cornerRadius: 22))
-                .focused($isComposerFocused)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .background(KlicColor.surfaceRaised, in: RoundedRectangle(cornerRadius: 22))
 
             let canSend = !draft.trimmingCharacters(in: .whitespaces).isEmpty
             if canSend {
@@ -282,20 +371,80 @@ struct ChatView: View {
 
     // MARK: Helpers
 
-    private func showDateSeparator(at idx: Int) -> Bool {
-        guard idx > 0 else { return true }
-        let prev = messages[idx - 1].createdAt
-        let curr = messages[idx].createdAt
-        return !sameDay(prev, curr)
-    }
-
     private func sameDay(_ a: String, _ b: String) -> Bool {
         String(a.prefix(10)) == String(b.prefix(10))
     }
 
     private func scrollToBottom() {
-        guard let last = messages.last else { return }
-        withAnimation { scrollProxy?.scrollTo(last.id, anchor: .bottom) }
+        if peerIsTyping {
+            withAnimation { scrollProxy?.scrollTo("typing-indicator", anchor: .bottom) }
+        } else if let last = visibleMessages.last {
+            withAnimation { scrollProxy?.scrollTo(last.id, anchor: .bottom) }
+        }
+    }
+
+    private func upsert(_ msg: Message) {
+        if let idx = messages.firstIndex(where: { $0.id == msg.id }) { messages[idx] = msg }
+        else { messages.append(msg) }
+    }
+
+    // MARK: Reply / reactions / delete / typing
+
+    private func react(_ message: Message, emoji: String) async {
+        if let updated = try? await APIClient.shared.react(
+            conversationId: conversation.id, messageId: message.id, emoji: emoji),
+           let idx = messages.firstIndex(where: { $0.id == message.id }) {
+            messages[idx].reactions = updated
+        }
+    }
+
+    private func deleteForMe(_ message: Message) {
+        hiddenIds.insert(message.id)
+        Self.saveHidden(hiddenIds, conversation.id)
+    }
+
+    private func deleteEveryone(_ message: Message) async {
+        try? await APIClient.shared.deleteForEveryone(conversationId: conversation.id, messageId: message.id)
+        if let idx = messages.firstIndex(where: { $0.id == message.id }) {
+            messages[idx].deletedAt = ISO8601DateFormatter().string(from: Date())
+            messages[idx].reactions = []
+        }
+    }
+
+    /// Throttled typing signal — re-sent at most every 2s while typing, cleared on stop.
+    private func emitTyping(_ isTyping: Bool) {
+        if isTyping {
+            let now = Date()
+            guard now.timeIntervalSince(lastTypingSent) > 2 else { return }
+            lastTypingSent = now
+            socket.emit("typing", ["conversationId": conversation.id, "isTyping": true])
+        } else {
+            lastTypingSent = .distantPast
+            socket.emit("typing", ["conversationId": conversation.id, "isTyping": false])
+        }
+    }
+
+    private func previewText(for message: Message) -> String {
+        if !message.body.isEmpty { return message.body }
+        if message.isSticker { return "Sticker" }
+        if let a = message.attachments.first {
+            switch a.kind {
+            case "IMAGE": return "📷 Photo"
+            case "VOICE": return "🎤 Voice message"
+            case "VIDEO": return "🎥 Video"
+            default:      return "📎 File"
+            }
+        }
+        if message.isCallEvent { return "📞 Call" }
+        return "Message"
+    }
+
+    private static func hiddenKey(_ convId: String) -> String { "hiddenMessages.\(convId)" }
+    private static func loadHidden(_ convId: String) -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: hiddenKey(convId)) ?? [])
+    }
+    private static func saveHidden(_ ids: Set<String>, _ convId: String) {
+        UserDefaults.standard.set(Array(ids), forKey: hiddenKey(convId))
     }
 
     private func load() async {
@@ -306,16 +455,20 @@ struct ChatView: View {
     private func send() async {
         let body = draft.trimmingCharacters(in: .whitespaces)
         guard !body.isEmpty else { return }
+        let replyId = replyingTo?.id
         draft = ""
-        if let msg = try? await APIClient.shared.send(conversationId: conversation.id, body: body) {
-            messages.append(msg)
+        withAnimation { replyingTo = nil }
+        if let msg = try? await APIClient.shared.send(conversationId: conversation.id, body: body, replyToId: replyId) {
+            upsert(msg)
             scrollToBottom()
         }
     }
 
     private func sendSticker(_ id: String) async {
-        if let msg = try? await APIClient.shared.sendSticker(conversationId: conversation.id, stickerId: id) {
-            messages.append(msg)
+        let replyId = replyingTo?.id
+        withAnimation { replyingTo = nil }
+        if let msg = try? await APIClient.shared.sendSticker(conversationId: conversation.id, stickerId: id, replyToId: replyId) {
+            upsert(msg)
             scrollToBottom()
         }
     }
@@ -368,13 +521,15 @@ struct ChatView: View {
                                 durationMs: Int? = nil, waveform: Data? = nil, fileName: String? = nil) async {
         uploading = true
         defer { uploading = false }
+        let replyId = replyingTo?.id
         do {
             let draft = try await Media.upload(
                 conversationId: conversation.id, kind: kind, contentType: contentType, data: data,
                 width: width, height: height, durationMs: durationMs, waveform: waveform, fileName: fileName)
             let msg = try await APIClient.shared.sendMessage(
-                conversationId: conversation.id, body: nil, attachments: [draft])
-            messages.append(msg)
+                conversationId: conversation.id, body: nil, attachments: [draft], replyToId: replyId)
+            withAnimation { replyingTo = nil }
+            upsert(msg)
             scrollToBottom()
         } catch {
             // Upload/send failed — silently ignored for now (matches existing send() behavior).
@@ -446,20 +601,36 @@ private struct MessageBubble: View {
     let isMine: Bool
     let isFirst: Bool
     let isLast: Bool
+    var replyAuthorName: String = ""
     var onCallBack: (String) -> Void = { _ in }
+    var onLongPress: () -> Void = {}
+    var onReactionTap: (String) -> Void = { _ in }
 
     private var topRadius:    CGFloat { isFirst ? 18 : (isMine ? 18 : 4) }
     private var bottomRadius: CGFloat { isLast  ? 18 : (isMine ? 4  : 18) }
     private var tailRadius:   CGFloat { isLast  ? 4  : 18 }
 
     var body: some View {
-        if message.isCallEvent, let call = message.call {
+        if message.isDeleted {
+            DeletedBubble(isMine: isMine)
+        } else if message.isCallEvent, let call = message.call {
             CallEventRow(call: call, outgoing: isMine, time: shortTime(message.createdAt), onCallBack: onCallBack)
         } else if message.isSticker, let stickerId = message.stickerId {
-            StickerMessageView(stickerId: stickerId, isMine: isMine, time: isLast ? shortTime(message.createdAt) : nil)
+            stickerBubble(stickerId)
         } else {
             standardBubble
         }
+    }
+
+    private func stickerBubble(_ stickerId: String) -> some View {
+        VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+            StickerMessageView(stickerId: stickerId, isMine: isMine, time: isLast ? shortTime(message.createdAt) : nil)
+                .onLongPressGesture(minimumDuration: 0.3, perform: onLongPress)
+            if !message.reactions.isEmpty {
+                ReactionPills(reactions: message.reactions, onTap: onReactionTap)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
     }
 
     private var standardBubble: some View {
@@ -468,29 +639,36 @@ private struct MessageBubble: View {
 
             VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
                 if !message.attachments.isEmpty {
+                    if let reply = message.replyTo {
+                        ReplyQuoteView(reply: reply, authorName: replyAuthorName)
+                    }
                     MessageAttachmentsView(attachments: message.attachments, isMine: isMine)
                 }
 
                 if !message.body.isEmpty {
-                    Text(message.body)
-                        .font(KlicFont.body())
-                        .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(
-                            isMine ? KlicColor.primary : KlicColor.surfaceRaised,
-                            in: UnevenRoundedRectangle(
-                                topLeadingRadius:     isMine ? 18 : topRadius,
-                                bottomLeadingRadius:  isMine ? 18 : bottomRadius,
-                                bottomTrailingRadius: isMine ? tailRadius : 18,
-                                topTrailingRadius:    isMine ? topRadius : 18
-                            )
-                        )
-                        .contextMenu {
-                            Button {
-                                UIPasteboard.general.string = message.body
-                            } label: { Label("Copy", systemImage: "doc.on.doc") }
+                    VStack(alignment: .leading, spacing: 5) {
+                        if let reply = message.replyTo, message.attachments.isEmpty {
+                            ReplyQuoteView(reply: reply, authorName: replyAuthorName, onPrimary: isMine)
                         }
+                        Text(message.body)
+                            .font(KlicFont.body())
+                            .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        isMine ? KlicColor.primary : KlicColor.surfaceRaised,
+                        in: UnevenRoundedRectangle(
+                            topLeadingRadius:     isMine ? 18 : topRadius,
+                            bottomLeadingRadius:  isMine ? 18 : bottomRadius,
+                            bottomTrailingRadius: isMine ? tailRadius : 18,
+                            topTrailingRadius:    isMine ? topRadius : 18
+                        )
+                    )
+                }
+
+                if !message.reactions.isEmpty {
+                    ReactionPills(reactions: message.reactions, onTap: onReactionTap)
                 }
 
                 if isLast {
@@ -505,6 +683,7 @@ private struct MessageBubble: View {
                     .padding(.horizontal, 4)
                 }
             }
+            .onLongPressGesture(minimumDuration: 0.3, perform: onLongPress)
 
             if !isMine { Spacer(minLength: 56) }
         }

@@ -12,7 +12,7 @@ struct AvatarView: View {
                 AsyncImage(url: parsed) { phase in
                     switch phase {
                     case .success(let image): image.resizable().scaledToFill()
-                    case .empty: ProgressView().tint(KlicColor.primary)
+                    case .empty: LoadingCircle()
                     default: initials
                     }
                 }
