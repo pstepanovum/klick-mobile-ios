@@ -9,14 +9,15 @@ enum Media {
     /// Uploads bytes (presign → PUT) and returns a draft ready to attach to a message.
     static func upload(
         conversationId: String, kind: String, contentType: String, data: Data,
-        width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, fileName: String? = nil
+        width: Int? = nil, height: Int? = nil, durationMs: Int? = nil,
+        waveform: Data? = nil, fileName: String? = nil
     ) async throws -> AttachmentDraft {
         let ticket = try await APIClient.shared.requestUpload(
             conversationId: conversationId, kind: kind, contentType: contentType, byteSize: data.count)
         try await APIClient.shared.uploadData(data, to: ticket.uploadUrl, contentType: contentType)
         return AttachmentDraft(
             key: ticket.key, kind: kind, contentType: contentType, byteSize: data.count,
-            width: width, height: height, durationMs: durationMs, fileName: fileName)
+            width: width, height: height, durationMs: durationMs, waveform: waveform, fileName: fileName)
     }
 
     /// Downscale + JPEG-encode an image. Returns (data, pixelWidth, pixelHeight).
@@ -64,6 +65,7 @@ final class AudioRecorder: ObservableObject {
     private var recorder: AVAudioRecorder?
     private var timer: Timer?
     private var fileURL: URL?
+    private var samples: [Float] = []
 
     func start() {
         AVAudioApplication.requestRecordPermission { [weak self] granted in
@@ -85,27 +87,36 @@ final class AudioRecorder: ObservableObject {
         ]
         guard let rec = try? AVAudioRecorder(url: url, settings: settings) else { return }
         recorder = rec; fileURL = url
+        rec.isMeteringEnabled = true
         rec.record()
-        isRecording = true; elapsed = 0
+        isRecording = true; elapsed = 0; samples = []
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in if let r = self?.recorder { self?.elapsed = r.currentTime } }
+            Task { @MainActor in
+                guard let self, let r = self.recorder else { return }
+                self.elapsed = r.currentTime
+                r.updateMeters()
+                let db = r.averagePower(forChannel: 0)
+                let clamped = max(-60.0, min(0.0, Double(db)))
+                self.samples.append(Float((clamped + 60.0) / 60.0))
+            }
         }
     }
 
-    /// Stop and return (data, durationMs); nil if too short or failed.
-    func stop() -> (data: Data, durationMs: Int)? {
+    /// Stop and return (data, durationMs, waveform); nil if too short or failed.
+    func stop() -> (data: Data, durationMs: Int, waveform: Data)? {
         timer?.invalidate(); timer = nil
         guard let rec = recorder, let url = fileURL else { isRecording = false; return nil }
         let duration = rec.currentTime
-        rec.stop(); recorder = nil; isRecording = false
+        let captured = samples
+        rec.stop(); recorder = nil; isRecording = false; samples = []
         try? AVAudioSession.sharedInstance().setActive(false)
         guard duration > 0.4, let data = try? Data(contentsOf: url) else { return nil }
-        return (data, Int(duration * 1000))
+        return (data, Int(duration * 1000), packWaveform(captured))
     }
 
     func cancel() {
         timer?.invalidate(); timer = nil
-        recorder?.stop(); recorder = nil; isRecording = false
+        recorder?.stop(); recorder = nil; isRecording = false; samples = []
         if let url = fileURL { try? FileManager.default.removeItem(at: url) }
     }
 }
@@ -235,6 +246,11 @@ private struct VoiceAttachmentView: View {
     private var playing: Bool { player.playingId == att.id }
     private var tint: Color { isMine ? KlicColor.onPrimary : KlicColor.primary }
 
+    private var waveformAmplitudes: [Float] {
+        guard let b64 = att.waveform, let data = Data(base64Encoded: b64) else { return [] }
+        return unpackWaveform(data)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Button { player.toggle(id: att.id, url: att.url) } label: {
@@ -244,14 +260,12 @@ private struct VoiceAttachmentView: View {
                     .frame(width: 34, height: 34)
                     .background(tint, in: Circle())
             }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(tint.opacity(0.25)).frame(height: 4)
-                    Capsule().fill(tint).frame(width: geo.size.width * (playing ? player.progress : 0), height: 4)
-                }
-                .frame(maxHeight: .infinity)
-            }
-            .frame(width: 110, height: 34)
+            WaveformBarsView(
+                amplitudes: waveformAmplitudes,
+                progress: playing ? player.progress : 0,
+                isOutgoing: isMine
+            )
+            .frame(width: 110)
             Text(durationText)
                 .font(KlicFont.caption(12))
                 .foregroundStyle(isMine ? KlicColor.onPrimary.opacity(0.85) : KlicColor.textMuted)

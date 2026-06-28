@@ -172,6 +172,7 @@ actor APIClient {
             if let w = a.width { d["width"] = w }
             if let h = a.height { d["height"] = h }
             if let ms = a.durationMs { d["durationMs"] = ms }
+            if let wf = a.waveform { d["waveform"] = wf.base64EncodedString() }
             if let n = a.fileName { d["fileName"] = n }
             return d
         }

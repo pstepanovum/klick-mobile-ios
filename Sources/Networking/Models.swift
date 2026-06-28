@@ -45,6 +45,7 @@ struct Attachment: Codable, Identifiable, Hashable {
     var width: Int?
     var height: Int?
     var durationMs: Int?
+    var waveform: String?       // base64-encoded 5-bit packed waveform (VOICE only)
     var fileName: String?
 
     var isImage: Bool { kind == "IMAGE" }
@@ -125,5 +126,6 @@ struct AttachmentDraft {
     var width: Int?
     var height: Int?
     var durationMs: Int?
+    var waveform: Data?         // 5-bit packed waveform bytes to send as base64 (VOICE only)
     var fileName: String?
 }

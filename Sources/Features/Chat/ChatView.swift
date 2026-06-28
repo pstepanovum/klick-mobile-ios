@@ -333,19 +333,19 @@ struct ChatView: View {
     }
 
     private func stopAndSendVoice() async {
-        guard let (data, durationMs) = recorder.stop() else { return }
-        await sendAttachment(kind: "VOICE", contentType: "audio/m4a", data: data, durationMs: durationMs)
+        guard let (data, durationMs, waveform) = recorder.stop() else { return }
+        await sendAttachment(kind: "VOICE", contentType: "audio/m4a", data: data, durationMs: durationMs, waveform: waveform)
     }
 
     private func sendAttachment(kind: String, contentType: String, data: Data,
                                 width: Int? = nil, height: Int? = nil,
-                                durationMs: Int? = nil, fileName: String? = nil) async {
+                                durationMs: Int? = nil, waveform: Data? = nil, fileName: String? = nil) async {
         uploading = true
         defer { uploading = false }
         do {
             let draft = try await Media.upload(
                 conversationId: conversation.id, kind: kind, contentType: contentType, data: data,
-                width: width, height: height, durationMs: durationMs, fileName: fileName)
+                width: width, height: height, durationMs: durationMs, waveform: waveform, fileName: fileName)
             let msg = try await APIClient.shared.sendMessage(
                 conversationId: conversation.id, body: nil, attachments: [draft])
             messages.append(msg)
