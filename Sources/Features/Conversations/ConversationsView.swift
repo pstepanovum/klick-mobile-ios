@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct ConversationsView: View {
-    @EnvironmentObject var session: AppSession
     @State private var conversations: [Conversation] = []
 
     var body: some View {
@@ -21,11 +20,6 @@ struct ConversationsView: View {
             .background(KlicColor.background.ignoresSafeArea())
             .navigationTitle("Chats")
             .navigationDestination(for: Conversation.self) { ChatView(conversation: $0) }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { session.logout() } label: { Icon(.settings) }
-                }
-            }
             .task { await load() }
         }
         .tint(KlicColor.primary)

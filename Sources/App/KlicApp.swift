@@ -4,19 +4,38 @@ import SwiftUI
 struct KlicApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var session = AppSession()
+    @StateObject private var themeManager = ThemeManager()
 
     init() {
-        // Force the dark, brand-themed UI everywhere.
-        UINavigationBar.appearance().tintColor = UIColor(KlicColor.primary)
+        configureNavigationBar()
+        configureTabBar()
     }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(session)
-                .preferredColorScheme(.dark)
+                .environmentObject(themeManager)
+                .preferredColorScheme(themeManager.scheme.colorScheme)
                 .tint(KlicColor.primary)
                 .onAppear { session.bootstrap() }
         }
+    }
+
+    private func configureNavigationBar() {
+        UINavigationBar.appearance().tintColor = UIColor(KlicColor.primary)
+    }
+
+    private func configureTabBar() {
+        let darkSurface  = UIColor(red: 26/255, green: 26/255, blue: 26/255, alpha: 1)
+        let lightSurface = UIColor.white
+        let adaptiveBg   = UIColor { $0.userInterfaceStyle == .dark ? darkSurface : lightSurface }
+
+        let appearance = UITabBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = adaptiveBg
+
+        UITabBar.appearance().standardAppearance   = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
     }
 }

@@ -9,16 +9,18 @@ struct RootView: View {
             if session.isAuthenticated {
                 TabView {
                     ConversationsView()
-                        .tabItem { Label("Chats", systemImage: KlicIcon.message.symbol) }
+                        .tabItem { Label("Chats",    image: KlicIcon.message.line) }
                     FriendsView()
-                        .tabItem { Label("Friends", systemImage: KlicIcon.user.symbol) }
+                        .tabItem { Label("Friends",  image: KlicIcon.user.line) }
+                    CallDialView()
+                        .tabItem { Label("Call",     image: KlicIcon.phone.line) }
+                    SettingsView()
+                        .tabItem { Label("Settings", image: KlicIcon.settings.line) }
                 }
             } else {
                 AuthView()
             }
         }
-        // The in-call screen is presented whenever CallKit has an active call
-        // (outgoing, or an incoming call the user answered from the system UI).
         .fullScreenCover(item: $callKit.activeCall) { call in
             CallView(call: call)
         }
