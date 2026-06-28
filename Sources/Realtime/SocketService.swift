@@ -1,7 +1,7 @@
 import Foundation
 import SocketIO
 
-/// Socket.io client mirroring `klick-server/src/realtime/events.ts`.
+/// Socket.io client mirroring `klic-server/src/realtime/events.ts`.
 @MainActor
 final class SocketService: ObservableObject {
     static let shared = SocketService()
