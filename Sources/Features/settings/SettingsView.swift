@@ -10,6 +10,13 @@ struct SettingsView: View {
                 VStack(spacing: 16) {
                     appearanceSection
                     accountSection
+                    VStack(spacing: 6) {
+                        KlicLottieView(name: "07", height: 140)
+                        Text("Version \(appVersion)")
+                            .font(KlicFont.caption(12))
+                            .foregroundStyle(KlicColor.textMuted)
+                    }
+                    .padding(.top, 8)
                 }
                 .padding(20)
             }
@@ -17,6 +24,10 @@ struct SettingsView: View {
             .navigationTitle("Settings")
         }
         .tint(KlicColor.primary)
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
 
     private var appearanceSection: some View {

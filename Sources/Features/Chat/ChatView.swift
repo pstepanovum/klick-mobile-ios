@@ -1,4 +1,7 @@
 import SwiftUI
+import PhotosUI
+import AVFoundation
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     let conversation: Conversation
@@ -8,6 +11,14 @@ struct ChatView: View {
     @State private var messages: [Message] = []
     @State private var draft = ""
     @State private var scrollProxy: ScrollViewProxy?
+
+    @StateObject private var recorder = AudioRecorder()
+    @State private var pickedItem: PhotosPickerItem?
+    @State private var showAttachMenu = false
+    @State private var showPhotos = false
+    @State private var showCamera = false
+    @State private var showFileImporter = false
+    @State private var uploading = false
 
     var title: String { conversation.members.first?.displayName ?? "Chat" }
     var myId: String? { session.currentUser?.id }
@@ -76,7 +87,45 @@ struct ChatView: View {
     // MARK: Composer
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
+        Group {
+            if recorder.isRecording {
+                recordingBar
+            } else {
+                normalComposer
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(KlicColor.surface)
+        .confirmationDialog("Attach", isPresented: $showAttachMenu, titleVisibility: .visible) {
+            Button("Photo or Video") { showPhotos = true }
+            Button("Camera") { showCamera = true }
+            Button("File") { showFileImporter = true }
+            Button("Cancel", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $showPhotos, selection: $pickedItem, matching: .any(of: [.images, .videos]))
+        .onChange(of: pickedItem) { _, item in
+            guard let item else { return }
+            Task { await handlePicked(item); pickedItem = nil }
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { img in Task { await sendImage(img) } }.ignoresSafeArea()
+        }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
+            if case .success(let urls) = result, let url = urls.first { Task { await sendFile(url) } }
+        }
+    }
+
+    private var normalComposer: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Button { showAttachMenu = true } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(KlicColor.textMuted)
+                    .frame(width: 40, height: 44)
+            }
+            .disabled(uploading)
+
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
                 .font(KlicFont.body())
@@ -87,17 +136,47 @@ struct ChatView: View {
                 .background(KlicColor.surfaceRaised, in: RoundedRectangle(cornerRadius: 22))
 
             let canSend = !draft.trimmingCharacters(in: .whitespaces).isEmpty
-            Button { Task { await send() } } label: {
-                Icon(.send, size: 18, color: canSend ? KlicColor.onPrimary : KlicColor.textMuted)
-                    .frame(width: 44, height: 44)
-                    .background(canSend ? KlicColor.primary : KlicColor.surfaceRaised, in: Circle())
+            if canSend {
+                Button { Task { await send() } } label: {
+                    Icon(.send, size: 18, color: KlicColor.onPrimary)
+                        .frame(width: 44, height: 44)
+                        .background(KlicColor.primary, in: Circle())
+                }
+            } else {
+                Button { recorder.start() } label: {
+                    Icon(.mic, size: 18, color: KlicColor.onPrimary)
+                        .frame(width: 44, height: 44)
+                        .background(KlicColor.primary, in: Circle())
+                }
+                .disabled(uploading)
             }
-            .disabled(!canSend)
-            .animation(.easeInOut(duration: 0.15), value: canSend)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(KlicColor.surface)
+        .animation(.easeInOut(duration: 0.15), value: draft.isEmpty)
+    }
+
+    private var recordingBar: some View {
+        HStack(spacing: 14) {
+            Button { recorder.cancel() } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 18)).foregroundStyle(KlicColor.textMuted)
+                    .frame(width: 40, height: 44)
+            }
+            Circle().fill(.red).frame(width: 10, height: 10)
+            Text(elapsedText)
+                .font(KlicFont.body()).foregroundStyle(KlicColor.textPrimary).monospacedDigit()
+            Spacer()
+            Text("Recording…").font(KlicFont.caption(12)).foregroundStyle(KlicColor.textMuted)
+            Button { Task { await stopAndSendVoice() } } label: {
+                Icon(.send, size: 18, color: KlicColor.onPrimary)
+                    .frame(width: 44, height: 44)
+                    .background(KlicColor.primary, in: Circle())
+            }
+        }
+    }
+
+    private var elapsedText: String {
+        let s = Int(recorder.elapsed)
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // MARK: Helpers
@@ -133,6 +212,67 @@ struct ChatView: View {
         }
     }
 
+    // MARK: Media
+
+    private func handlePicked(_ item: PhotosPickerItem) async {
+        let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
+        if isVideo {
+            if let movie = try? await item.loadTransferable(type: Movie.self) { await sendVideo(movie.url) }
+        } else if let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data) {
+            await sendImage(img)
+        }
+    }
+
+    private func sendImage(_ image: UIImage) async {
+        guard let (data, w, h) = Media.encodeImage(image) else { return }
+        await sendAttachment(kind: "IMAGE", contentType: "image/jpeg", data: data, width: w, height: h)
+    }
+
+    private func sendVideo(_ url: URL) async {
+        guard let data = try? Data(contentsOf: url) else { return }
+        let asset = AVURLAsset(url: url)
+        var durationMs = 0
+        if let d = try? await asset.load(.duration) { durationMs = Int(CMTimeGetSeconds(d) * 1000) }
+        var w: Int?, h: Int?
+        if let track = try? await asset.loadTracks(withMediaType: .video).first,
+           let size = try? await track.load(.naturalSize) {
+            w = Int(abs(size.width)); h = Int(abs(size.height))
+        }
+        await sendAttachment(kind: "VIDEO", contentType: Media.mime(for: url, fallback: "video/quicktime"),
+                             data: data, width: w, height: h, durationMs: durationMs)
+    }
+
+    private func sendFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else { return }
+        await sendAttachment(kind: "FILE", contentType: Media.mime(for: url, fallback: "application/octet-stream"),
+                             data: data, fileName: url.lastPathComponent)
+    }
+
+    private func stopAndSendVoice() async {
+        guard let (data, durationMs) = recorder.stop() else { return }
+        await sendAttachment(kind: "VOICE", contentType: "audio/m4a", data: data, durationMs: durationMs)
+    }
+
+    private func sendAttachment(kind: String, contentType: String, data: Data,
+                                width: Int? = nil, height: Int? = nil,
+                                durationMs: Int? = nil, fileName: String? = nil) async {
+        uploading = true
+        defer { uploading = false }
+        do {
+            let draft = try await Media.upload(
+                conversationId: conversation.id, kind: kind, contentType: contentType, data: data,
+                width: width, height: height, durationMs: durationMs, fileName: fileName)
+            let msg = try await APIClient.shared.sendMessage(
+                conversationId: conversation.id, body: nil, attachments: [draft])
+            messages.append(msg)
+            scrollToBottom()
+        } catch {
+            // Upload/send failed — silently ignored for now (matches existing send() behavior).
+        }
+    }
+
     private func markRead() {
         socket.emit("message:read", ["conversationId": conversation.id])
     }
@@ -160,21 +300,27 @@ private struct MessageBubble: View {
         HStack(alignment: .bottom, spacing: 6) {
             if isMine { Spacer(minLength: 56) }
 
-            VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
-                Text(message.body)
-                    .font(KlicFont.body())
-                    .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(
-                        isMine ? KlicColor.primary : KlicColor.surfaceRaised,
-                        in: UnevenRoundedRectangle(
-                            topLeadingRadius:     isMine ? 18 : topRadius,
-                            bottomLeadingRadius:  isMine ? 18 : bottomRadius,
-                            bottomTrailingRadius: isMine ? tailRadius : 18,
-                            topTrailingRadius:    isMine ? topRadius : 18
+            VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+                if !message.attachments.isEmpty {
+                    MessageAttachmentsView(attachments: message.attachments, isMine: isMine)
+                }
+
+                if !message.body.isEmpty {
+                    Text(message.body)
+                        .font(KlicFont.body())
+                        .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            isMine ? KlicColor.primary : KlicColor.surfaceRaised,
+                            in: UnevenRoundedRectangle(
+                                topLeadingRadius:     isMine ? 18 : topRadius,
+                                bottomLeadingRadius:  isMine ? 18 : bottomRadius,
+                                bottomTrailingRadius: isMine ? tailRadius : 18,
+                                topTrailingRadius:    isMine ? topRadius : 18
+                            )
                         )
-                    )
+                }
 
                 if isLast {
                     Text(shortTime(message.createdAt))

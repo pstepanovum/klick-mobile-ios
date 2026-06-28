@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var callKit = CallKitManager.shared
+    @State private var didGetStarted = false
 
     var body: some View {
         Group {
@@ -17,8 +18,10 @@ struct RootView: View {
                     SettingsView()
                         .tabItem { Label("Settings", image: KlicIcon.settings.line) }
                 }
-            } else {
+            } else if didGetStarted {
                 AuthView()
+            } else {
+                WelcomeView { withAnimation { didGetStarted = true } }
             }
         }
         .fullScreenCover(item: $callKit.activeCall) { call in

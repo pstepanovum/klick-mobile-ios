@@ -15,13 +15,16 @@ packages:
   Lottie:
     url: https://github.com/airbnb/lottie-ios.git
     from: "4.5.0"
+  Inject:
+    url: https://github.com/krzysztofzablocki/Inject.git
+    from: "1.5.2"
 
 settings:
   base:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.0"
-    DEVELOPMENT_TEAM: ""           # set for signing, or sign manually with the certs in klic-assets/Apple
+    DEVELOPMENT_TEAM: "775RWRF5LZ"
 
 targets:
   Klic:
@@ -41,6 +44,7 @@ targets:
       - package: LiveKit
       - package: SocketIO
       - package: Lottie
+      - package: Inject
       - target: KlicWidgets
 
   KlicWidgets:

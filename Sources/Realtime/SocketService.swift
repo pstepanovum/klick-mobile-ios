@@ -35,7 +35,9 @@ final class SocketService: ObservableObject {
         self.socket = socket
 
         socket.on("message:new") { [weak self] data, _ in
-            guard let dict = data.first as? [String: Any], let msg = Message(dict: dict) else { return }
+            guard let dict = data.first as? [String: Any],
+                  let json = try? JSONSerialization.data(withJSONObject: dict),
+                  let msg = try? JSONDecoder().decode(Message.self, from: json) else { return }
             self?.lastMessage = msg
         }
         socket.on("call:invite") { [weak self] data, _ in
@@ -70,20 +72,6 @@ final class SocketService: ObservableObject {
 
     func emit(_ event: String, _ payload: [String: Any]) { socket?.emit(event, payload) }
     func disconnect() { socket?.disconnect() }
-}
-
-private extension Message {
-    init?(dict: [String: Any]) {
-        guard let id = dict["id"] as? String,
-              let conversationId = dict["conversationId"] as? String,
-              let senderId = dict["senderId"] as? String,
-              let body = dict["body"] as? String else { return nil }
-        self.init(
-            id: id, conversationId: conversationId, senderId: senderId, body: body,
-            kind: dict["kind"] as? String ?? "TEXT",
-            createdAt: dict["createdAt"] as? String ?? ""
-        )
-    }
 }
 
 private extension SocketService.CallInvite {

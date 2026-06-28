@@ -16,6 +16,15 @@ struct FriendsView: View {
                     addFriendSection
                     if !requests.isEmpty { requestsSection }
                     friendsSection
+                    VStack(spacing: 6) {
+                        KlicLottieView(name: "01", height: 180)
+                        Text("Your people, all in one place.")
+                            .font(KlicFont.caption(13))
+                            .foregroundStyle(KlicColor.textMuted)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
                 }
                 .padding(20)
             }

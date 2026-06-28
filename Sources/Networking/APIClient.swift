@@ -97,6 +97,50 @@ actor APIClient {
         return try await post("/me/devices", body: body)
     }
 
+    // MARK: Attachments / media
+
+    /// Step 1: ask the server for a presigned PUT URL for an attachment.
+    func requestUpload(conversationId: String, kind: String, contentType: String, byteSize: Int) async throws -> UploadTicket {
+        try await post("/uploads", body: [
+            "conversationId": conversationId, "kind": kind, "contentType": contentType, "byteSize": byteSize,
+        ])
+    }
+
+    /// Step 2: PUT the bytes straight to object storage. No auth header; the
+    /// Content-Type MUST equal what `requestUpload` was given or the URL's signature fails.
+    func uploadData(_ data: Data, to uploadUrl: String, contentType: String) async throws {
+        guard let url = URL(string: uploadUrl) else { throw APIError.noData }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        let (_, resp) = try await session.upload(for: req, from: data)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIError.server(message: "Upload failed", status: (resp as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+    }
+
+    /// Step 3: send the message referencing the uploaded object key(s).
+    func sendMessage(conversationId: String, body: String?, attachments: [AttachmentDraft]) async throws -> Message {
+        var payload: [String: Any] = [:]
+        if let body, !body.isEmpty { payload["body"] = body }
+        payload["attachments"] = attachments.map { a -> [String: Any] in
+            var d: [String: Any] = ["key": a.key, "kind": a.kind, "contentType": a.contentType, "byteSize": a.byteSize]
+            if let w = a.width { d["width"] = w }
+            if let h = a.height { d["height"] = h }
+            if let ms = a.durationMs { d["durationMs"] = ms }
+            if let n = a.fileName { d["fileName"] = n }
+            return d
+        }
+        return try await post("/conversations/\(conversationId)/messages", body: payload)
+    }
+
+    /// Re-presign a download URL when an old attachment's link has expired.
+    func refreshAttachmentURL(id: String) async throws -> String {
+        struct R: Decodable { let url: String }
+        let r: R = try await get("/attachments/\(id)/url")
+        return r.url
+    }
+
     // MARK: - Core
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
