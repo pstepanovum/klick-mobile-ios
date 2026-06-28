@@ -261,6 +261,7 @@ final class CallKitManager: NSObject, ObservableObject {
     func enableCameraFromSystemVideoButtonIfNeeded() {
         guard let call = activeCall,
               statusText == "Connected",
+              CallService.shared.isConnected,
               !call.isVideo,
               !CallService.shared.cameraEnabled
         else { return }
@@ -310,7 +311,6 @@ extension CallKitManager: CXProviderDelegate {
                 let kind = invite?.kind ?? session.kind ?? "AUDIO"
                 let isVideo = kind == "VIDEO"
                 let peerName = invite?.fromDisplayName ?? "Call"
-                statusText = "Connected"
                 activeCall = ActiveCall(
                     id: callId, roomName: session.roomName, livekitUrl: session.livekitUrl,
                     token: session.token, kind: kind, peerName: peerName, isOutgoing: false
@@ -322,6 +322,7 @@ extension CallKitManager: CXProviderDelegate {
                     token: session.token,
                     video: isVideo
                 )
+                statusText = "Connected"
                 APIClient.mobileDiagnostic(event: "callkit.answer.livekit.ok", callId: callId)
                 SocketService.shared.emit("call:accept", ["callId": callId])
                 CallActivityController.start(peerName: peerName, isVideo: isVideo)
