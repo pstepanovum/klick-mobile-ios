@@ -123,9 +123,18 @@ final class CallKitManager: NSObject, ObservableObject {
 
     private func callId(for uuid: UUID) -> String? {
         if let callId = uuidToCallId[uuid] { return callId }
-        guard let callId = persistedCallId(for: uuid) else { return nil }
+        let fallbackCallId: String?
+        if let persisted = persistedCallId(for: uuid) {
+            fallbackCallId = persisted
+        } else if pendingInvites.count == 1 {
+            fallbackCallId = pendingInvites.keys.first
+        } else {
+            fallbackCallId = nil
+        }
+        guard let callId = fallbackCallId else { return nil }
         uuidToCallId[uuid] = callId
         callIdToUUID[callId] = uuid
+        persist(callId: callId, for: uuid)
         return callId
     }
 
