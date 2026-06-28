@@ -10,7 +10,10 @@ final class AppSession: ObservableObject {
 
     func bootstrap() {
         // A stored token means we can stay signed in; profile fetch happens in M1.
-        if TokenStore.accessToken != nil { SocketService.shared.connect() }
+        if TokenStore.accessToken != nil {
+            SocketService.shared.connect()
+            DeviceRegistrar.sync()
+        }
     }
 
     func login(username: String, password: String) async {
@@ -35,6 +38,7 @@ final class AppSession: ObservableObject {
             TokenStore.save(access: res.accessToken, refresh: res.refreshToken)
             currentUser = res.user
             SocketService.shared.connect()
+            DeviceRegistrar.sync()
             errorMessage = nil
         } catch {
             errorMessage = "Could not sign in. Check your details and try again."

@@ -7,7 +7,6 @@ struct ChatView: View {
 
     @State private var messages: [Message] = []
     @State private var draft = ""
-    @State private var activeCall: CallSession?
 
     var title: String { conversation.members.first?.displayName ?? "Chat" }
 
@@ -34,10 +33,9 @@ struct ChatView: View {
                 }
             }
         }
-        .fullScreenCover(item: $activeCall) { CallView(session: $0, peerName: title) }
-        .task { await load() }
+        .task { await load(); markRead() }
         .onReceive(socket.$lastMessage.compactMap { $0 }) { msg in
-            if msg.conversationId == conversation.id { messages.append(msg) }
+            if msg.conversationId == conversation.id { messages.append(msg); markRead() }
         }
     }
 
@@ -69,8 +67,14 @@ struct ChatView: View {
         }
     }
 
+    private func markRead() {
+        socket.emit("message:read", ["conversationId": conversation.id])
+    }
+
     private func startCall(kind: String) async {
-        activeCall = try? await APIClient.shared.startCall(conversationId: conversation.id, kind: kind)
+        guard let session = try? await APIClient.shared.startCall(conversationId: conversation.id, kind: kind)
+        else { return }
+        CallKitManager.shared.startOutgoing(session, peerName: title)
     }
 }
 

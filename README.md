@@ -55,5 +55,21 @@ then point `KlicIcon`/`Icon` at the generated `ic_<variant>_<name>` images.
 Dev/Distribution certs live in `klic-assets/Apple/` (password in `klic-assets/Apple/password.txt`).
 Set `DEVELOPMENT_TEAM` in `project.yml`, or import the `.p12` + `.mobileprovision` and sign manually.
 
+## Calling & push (M3)
+- **CallKit + PushKit (VoIP)** drive native incoming-call UI — this is what shows the call in the
+  **Dynamic Island** and on the Lock Screen (`Sources/Calling/CallKitManager.swift`, `AppDelegate.swift`).
+- **Live Activity** (`Widget/`, `Sources/Shared/CallActivityAttributes.swift`) renders the ongoing
+  call in the Dynamic Island with a live timer.
+- **LiveKit video** is rendered by `Sources/Calling/CallVideoView.swift`.
+
+To make push actually fire you need (from the Apple Developer portal):
+1. An **APNs Auth Key** (`.p8`) — put its `Key ID`, `Team ID`, and bundle id into `klick-server/.env`
+   (`APNS_*`) and the `.p8` on the server.
+2. Enable **Push Notifications** + **VoIP** capabilities for `com.klic.app`; `Resources/Klic.entitlements`
+   already sets `aps-environment`.
+
+LiveKit track accessors in `CallService.swift` target SDK v2 — adjust if your installed version differs.
+
 ## Roadmap
-M1 auth/profile · M2 messaging + read receipts + push · M3 calling (LiveKit + CallKit + VoIP push).
+Done: M1 auth/friends · M2 read receipts + push · M3 calling (CallKit + Dynamic Island + VoIP).
+Next: call history, group calls, typing indicators, store builds.

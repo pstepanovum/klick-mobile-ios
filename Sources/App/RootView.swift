@@ -2,7 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject var session: AppSession
-    @StateObject private var socket = SocketService.shared
+    @StateObject private var callKit = CallKitManager.shared
 
     var body: some View {
         Group {
@@ -17,15 +17,10 @@ struct RootView: View {
                 AuthView()
             }
         }
-        // Incoming call → present the call screen over whatever is on top.
-        .fullScreenCover(item: $socket.incomingCall) { invite in
-            CallView(
-                session: CallSession(
-                    callId: invite.id, roomName: invite.roomName, livekitUrl: invite.livekitUrl,
-                    token: "", kind: invite.kind
-                ),
-                peerName: invite.fromDisplayName
-            )
+        // The in-call screen is presented whenever CallKit has an active call
+        // (outgoing, or an incoming call the user answered from the system UI).
+        .fullScreenCover(item: $callKit.activeCall) { call in
+            CallView(call: call)
         }
     }
 }

@@ -40,7 +40,10 @@ final class SocketService: ObservableObject {
         }
         socket.on("call:invite") { [weak self] data, _ in
             guard let dict = data.first as? [String: Any] else { return }
-            self?.incomingCall = CallInvite(dict: dict)
+            let invite = CallInvite(dict: dict)
+            self?.incomingCall = invite
+            // Ring via the system call UI (Dynamic Island / Lock Screen).
+            CallKitManager.shared.reportIncoming(invite)
         }
         socket.connect()
     }

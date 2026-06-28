@@ -28,6 +28,12 @@
         <string>remote-notification</string>
     </array>
 
+    <!-- Live Activities (Dynamic Island) -->
+    <key>NSSupportsLiveActivities</key>
+    <true/>
+    <key>NSSupportsLiveActivitiesFrequentUpdates</key>
+    <true/>
+
     <!-- Custom fonts (curated TikTok Sans subset) -->
     <key>UIAppFonts</key>
     <array>

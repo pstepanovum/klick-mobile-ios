@@ -69,6 +69,17 @@ actor APIClient {
         try await post("/calls/\(callId)/token", body: [:])
     }
 
+    func endCall(callId: String) async throws -> EmptyResponse {
+        try await post("/calls/\(callId)/end", body: [:])
+    }
+
+    func registerDevice(pushToken: String?, voipToken: String?) async throws -> EmptyResponse {
+        var body: [String: Any] = ["platform": "IOS"]
+        if let pushToken { body["pushToken"] = pushToken }
+        if let voipToken { body["voipToken"] = voipToken }
+        return try await post("/me/devices", body: body)
+    }
+
     // MARK: - Core
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
