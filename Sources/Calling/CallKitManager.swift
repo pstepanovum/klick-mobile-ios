@@ -154,6 +154,8 @@ extension CallKitManager: CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         Task { @MainActor in
             guard let callId = uuidToCallId[action.uuid] else { action.fail(); return }
+            action.fulfill()
+            statusText = "Connecting..."
             do {
                 // Everything needed to join comes from the token response, so answering
                 // works even if the original invite is no longer in memory.
@@ -172,11 +174,10 @@ extension CallKitManager: CXProviderDelegate {
                 SocketService.shared.emit("call:accept", ["callId": callId])
                 CallActivityController.start(peerName: peerName, isVideo: isVideo)
                 CallActivityController.update(status: "Connected", muted: false, isVideo: isVideo)
-                action.fulfill()
             } catch {
                 print("CallKit answer failed for \(callId): \(error)")
                 SocketService.shared.emit("call:decline", ["callId": callId])
-                action.fail()
+                finishCall(callId: callId, status: "Call failed", notifyServer: false, dismissAfter: 500_000_000)
             }
         }
     }
