@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct KlicApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = AppSession()
     @StateObject private var themeManager = ThemeManager()
 
@@ -19,6 +20,11 @@ struct KlicApp: App {
                 .preferredColorScheme(themeManager.scheme.colorScheme)
                 .tint(KlicColor.primary)
                 .onAppear { session.bootstrap() }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active {
+                        CallKitManager.shared.enableCameraFromSystemVideoButtonIfNeeded()
+                    }
+                }
         }
     }
 

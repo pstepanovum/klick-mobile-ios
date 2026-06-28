@@ -168,8 +168,12 @@ extension CallService: RoomDelegate {
 
     nonisolated func room(_ room: Room, participantDidDisconnect participant: RemoteParticipant) {
         Task { @MainActor in
-            APIClient.mobileDiagnostic(event: "livekit.remote.disconnect", callId: currentCallId)
+            let callId = currentCallId
+            APIClient.mobileDiagnostic(event: "livekit.remote.disconnect", callId: callId)
             refreshTracks()
+            if let callId {
+                CallKitManager.shared.handleMediaPeerDisconnected(callId: callId)
+            }
         }
     }
 }

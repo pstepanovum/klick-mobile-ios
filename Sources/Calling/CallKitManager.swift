@@ -30,6 +30,7 @@ final class CallKitManager: NSObject, ObservableObject {
     private var callIdToUUID: [String: UUID] = [:]
     private var pendingInvites: [String: SocketService.CallInvite] = [:]
     private var ringTimeoutTask: Task<Void, Never>?
+    private var finishingCallIds = Set<String>()
 
     override init() {
         let config = CXProviderConfiguration()
@@ -75,6 +76,15 @@ final class CallKitManager: NSObject, ObservableObject {
     // MARK: Outgoing (user taps call)
 
     func startOutgoing(_ session: CallSession, peerName: String) {
+        if activeCall != nil {
+            APIClient.mobileDiagnostic(
+                event: "callkit.start.ignored.activeCall",
+                callId: session.callId,
+                detail: peerName
+            )
+            Task { try? await APIClient.shared.endCall(callId: session.callId) }
+            return
+        }
         let uuid = uuid(for: session.callId)
         statusText = "Calling..."
         activeCall = ActiveCall(
@@ -91,8 +101,24 @@ final class CallKitManager: NSObject, ObservableObject {
     // MARK: In-call controls routed through CallKit
 
     func requestEnd() {
-        guard let id = activeCall?.id, let uuid = callIdToUUID[id] else { return }
-        controller.request(CXTransaction(action: CXEndCallAction(call: uuid))) { _ in }
+        guard let id = activeCall?.id else { return }
+        guard let uuid = callIdToUUID[id] else {
+            APIClient.mobileDiagnostic(event: "callkit.end.fallback.missingUUID", callId: id)
+            finishCall(callId: id, status: "Ended", notifyServer: true, dismissAfter: 0)
+            return
+        }
+        controller.request(CXTransaction(action: CXEndCallAction(call: uuid))) { error in
+            if let error {
+                APIClient.mobileDiagnostic(
+                    event: "callkit.end.request.failed",
+                    callId: id,
+                    detail: String(describing: error)
+                )
+                Task { @MainActor in
+                    self.finishCall(callId: id, status: "Ended", notifyServer: true, dismissAfter: 0)
+                }
+            }
+        }
     }
 
     func requestSetMuted(_ muted: Bool) {
@@ -120,6 +146,7 @@ final class CallKitManager: NSObject, ObservableObject {
         pendingInvites[callId] = nil
         ringTimeoutTask?.cancel()
         ringTimeoutTask = nil
+        finishingCallIds.remove(callId)
     }
 
     private func callId(for uuid: UUID) -> String? {
@@ -172,6 +199,8 @@ final class CallKitManager: NSObject, ObservableObject {
     }
 
     private func finishCall(callId: String, status: String, notifyServer: Bool, dismissAfter seconds: UInt64 = 1_500_000_000) {
+        guard !finishingCallIds.contains(callId) else { return }
+        finishingCallIds.insert(callId)
         ringTimeoutTask?.cancel()
         statusText = status
         if notifyServer { Task { try? await APIClient.shared.endCall(callId: callId) } }
@@ -204,6 +233,25 @@ final class CallKitManager: NSObject, ObservableObject {
     func handleRemoteCallEnded(callId: String) {
         guard activeCall?.id == callId || pendingInvites[callId] != nil else { return }
         finishCall(callId: callId, status: "Ended", notifyServer: false, dismissAfter: 500_000_000)
+    }
+
+    func handleMediaPeerDisconnected(callId: String) {
+        guard activeCall?.id == callId else { return }
+        APIClient.mobileDiagnostic(event: "callkit.mediaPeerDisconnected.end", callId: callId)
+        finishCall(callId: callId, status: "Ended", notifyServer: false, dismissAfter: 500_000_000)
+    }
+
+    func enableCameraFromSystemVideoButtonIfNeeded() {
+        guard let call = activeCall,
+              statusText == "Connected",
+              !call.isVideo,
+              !CallService.shared.cameraEnabled
+        else { return }
+        APIClient.mobileDiagnostic(event: "callkit.systemVideo.enableCamera", callId: call.id)
+        Task {
+            await CallService.shared.setCamera(enabled: true)
+            CallActivityController.update(status: statusText, muted: !CallService.shared.micEnabled, isVideo: true)
+        }
     }
 }
 
