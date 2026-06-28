@@ -1,0 +1,15 @@
+# Xcode / generated project
+Klic.xcodeproj/
+*.xcworkspace/
+DerivedData/
+.build/
+build/
+*.ipa
+xcuserdata/
+*.xcuserstate
+
+# SwiftPM
+.swiftpm/
+
+# macOS
+.DS_Store
