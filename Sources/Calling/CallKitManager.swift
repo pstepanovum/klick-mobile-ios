@@ -30,7 +30,9 @@ final class CallKitManager: NSObject, ObservableObject {
     private var uuidToCallId: [UUID: String] = [:]
     private var callIdToUUID: [String: UUID] = [:]
     private var pendingInvites: [String: SocketService.CallInvite] = [:]
-    private var ringTimeoutTask: Task<Void, Never>?
+    /// Ring timeouts keyed by callId — never share one task across calls, or an overlapping
+    /// call clobbers the other's timeout and the abandoned call never self-cancels.
+    private var ringTimeoutTasks: [String: Task<Void, Never>] = [:]
     private var finishingCallIds = Set<String>()
     private var recentlyEndedCallIds = Set<String>()
 
@@ -151,8 +153,17 @@ final class CallKitManager: NSObject, ObservableObject {
         }
         callIdToUUID[callId] = nil
         pendingInvites[callId] = nil
-        ringTimeoutTask?.cancel()
-        ringTimeoutTask = nil
+        cancelRingTimeout(callId)
+    }
+
+    private func cancelRingTimeout(_ callId: String) {
+        ringTimeoutTasks[callId]?.cancel()
+        ringTimeoutTasks[callId] = nil
+    }
+
+    private func cancelAllRingTimeouts() {
+        for task in ringTimeoutTasks.values { task.cancel() }
+        ringTimeoutTasks.removeAll()
     }
 
     private func callId(for uuid: UUID) -> String? {
@@ -162,6 +173,10 @@ final class CallKitManager: NSObject, ObservableObject {
             fallbackCallId = persisted
         } else if pendingInvites.count == 1 {
             fallbackCallId = pendingInvites.keys.first
+        } else if callIdToUUID.count == 1 {
+            // The in-memory/persisted map was lost but we only know one call — answer it
+            // rather than failing outright (CallKit hands us a UUID we must resolve).
+            fallbackCallId = callIdToUUID.keys.first
         } else {
             fallbackCallId = nil
         }
@@ -196,8 +211,8 @@ final class CallKitManager: NSObject, ObservableObject {
     }
 
     private func startRingTimeout(callId: String) {
-        ringTimeoutTask?.cancel()
-        ringTimeoutTask = Task { [weak self] in
+        cancelRingTimeout(callId)
+        ringTimeoutTasks[callId] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 45_000_000_000)
             await MainActor.run {
                 guard let self, self.activeCall?.id == callId, self.statusText != "Connected" else { return }
@@ -215,7 +230,7 @@ final class CallKitManager: NSObject, ObservableObject {
         guard !finishingCallIds.contains(callId) else { return }
         finishingCallIds.insert(callId)
         recentlyEndedCallIds.insert(callId)
-        ringTimeoutTask?.cancel()
+        cancelRingTimeout(callId)
         statusText = status
         if activeCall?.id == callId {
             activeCall = nil
@@ -237,9 +252,22 @@ final class CallKitManager: NSObject, ObservableObject {
         }
     }
 
+    /// Tear down a call we're walking away from (because we're answering a different one)
+    /// without touching the shared media session / Live Activity — the call we're switching
+    /// to reconfigures those itself, so doing it here would race and kill the new call's UI.
+    private func endAbandonedCall(_ callId: String) {
+        recentlyEndedCallIds.insert(callId)
+        cancelRingTimeout(callId)
+        SocketService.shared.emit("call:cancel", ["callId": callId])
+        Task { try? await APIClient.shared.endCall(callId: callId) }
+        endSystemCall(callId: callId)
+        clear(callId)
+        if activeCall?.id == callId { activeCall = nil }
+    }
+
     func handlePeerAccepted(callId: String) {
         guard activeCall?.id == callId else { return }
-        ringTimeoutTask?.cancel()
+        cancelRingTimeout(callId)
         statusText = "Connected"
         CallActivityController.update(status: "Connected", muted: false, isVideo: activeCall?.isVideo ?? false)
     }
@@ -279,8 +307,7 @@ extension CallKitManager: CXProviderDelegate {
     nonisolated func providerDidReset(_ provider: CXProvider) {
         Task { @MainActor in
             APIClient.mobileDiagnostic(event: "callkit.provider.reset", callId: activeCall?.id)
-            ringTimeoutTask?.cancel()
-            ringTimeoutTask = nil
+            cancelAllRingTimeouts()
             if let callId = activeCall?.id {
                 recentlyEndedCallIds.insert(callId)
                 clear(callId)
@@ -301,6 +328,13 @@ extension CallKitManager: CXProviderDelegate {
             }
             APIClient.mobileDiagnostic(event: "callkit.answer.fulfill", callId: callId)
             action.fulfill()
+            // Answering this call means giving up any other one we had going (e.g. our own
+            // outgoing call to someone else). End it server-side and in CallKit so it can't
+            // linger ringing — the cause of stuck RINGING calls during overlap.
+            if let other = activeCall, other.id != callId {
+                APIClient.mobileDiagnostic(event: "callkit.answer.endOther", callId: other.id, detail: callId)
+                endAbandonedCall(other.id)
+            }
             statusText = "Connecting..."
             do {
                 // Everything needed to join comes from the token response, so answering
