@@ -59,10 +59,12 @@ extension AppDelegate: PKPushRegistryDelegate {
             kind: d["kind"] as? String ?? "AUDIO",
             fromDisplayName: d["fromName"] as? String ?? "Incoming call"
         )
-        Task { @MainActor in
+        // iOS requires reporting the call synchronously here (the registry runs on .main),
+        // otherwise the app can be terminated and future VoIP pushes blocked.
+        MainActor.assumeIsolated {
             CallKitManager.shared.reportIncoming(invite)
-            completion()
         }
+        completion()
     }
 }
 

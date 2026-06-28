@@ -96,18 +96,22 @@ extension CallKitManager: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         Task { @MainActor in
-            guard let callId = uuidToCallId[action.uuid], let invite = pendingInvites[callId] else {
-                action.fail(); return
-            }
+            guard let callId = uuidToCallId[action.uuid] else { action.fail(); return }
             do {
+                // Everything needed to join comes from the token response, so answering
+                // works even if the original invite is no longer in memory.
                 let session = try await APIClient.shared.joinToken(callId: callId)
+                let invite = pendingInvites[callId]
+                let kind = invite?.kind ?? session.kind ?? "AUDIO"
+                let isVideo = kind == "VIDEO"
+                let peerName = invite?.fromDisplayName ?? "Call"
                 activeCall = ActiveCall(
-                    id: callId, roomName: invite.roomName, livekitUrl: session.livekitUrl,
-                    token: session.token, kind: invite.kind, peerName: invite.fromDisplayName
+                    id: callId, roomName: session.roomName, livekitUrl: session.livekitUrl,
+                    token: session.token, kind: kind, peerName: peerName
                 )
-                await CallService.shared.join(url: session.livekitUrl, token: session.token, video: invite.kind == "VIDEO")
-                CallActivityController.start(peerName: invite.fromDisplayName, isVideo: invite.kind == "VIDEO")
-                CallActivityController.update(status: "Connected", muted: false, isVideo: invite.kind == "VIDEO")
+                await CallService.shared.join(url: session.livekitUrl, token: session.token, video: isVideo)
+                CallActivityController.start(peerName: peerName, isVideo: isVideo)
+                CallActivityController.update(status: "Connected", muted: false, isVideo: isVideo)
                 action.fulfill()
             } catch {
                 action.fail()
