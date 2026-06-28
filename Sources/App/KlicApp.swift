@@ -22,7 +22,11 @@ struct KlicApp: App {
                 .onAppear { session.bootstrap() }
                 .onChange(of: scenePhase) { phase in
                     if phase == .active {
-                        CallKitManager.shared.enableCameraFromSystemVideoButtonIfNeeded()
+                        if CallKitManager.shared.activeCall == nil {
+                            CallActivityController.end()
+                        } else {
+                            CallKitManager.shared.enableCameraFromSystemVideoButtonIfNeeded()
+                        }
                     }
                 }
         }

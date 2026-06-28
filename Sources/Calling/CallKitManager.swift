@@ -256,7 +256,19 @@ final class CallKitManager: NSObject, ObservableObject {
 }
 
 extension CallKitManager: CXProviderDelegate {
-    nonisolated func providerDidReset(_ provider: CXProvider) {}
+    nonisolated func providerDidReset(_ provider: CXProvider) {
+        Task { @MainActor in
+            APIClient.mobileDiagnostic(event: "callkit.provider.reset", callId: activeCall?.id)
+            ringTimeoutTask?.cancel()
+            ringTimeoutTask = nil
+            if let callId = activeCall?.id {
+                clear(callId)
+            }
+            activeCall = nil
+            await CallService.shared.leave()
+            CallActivityController.end()
+        }
+    }
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         Task { @MainActor in
