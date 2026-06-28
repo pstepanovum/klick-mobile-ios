@@ -19,8 +19,12 @@ final class CallService: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = false
-        AudioManager.shared.audioSession.isAutomaticDeactivationEnabled = false
+        // Let LiveKit own the AVAudioSession lifecycle (configure → activate → start engine,
+        // and deactivate on leave). Our previous manual setActive(true) raced CallKit's own
+        // activation and intermittently failed with "Audio Engine Error (-3010)", so ~half of
+        // answered calls connected with no audio. LiveKit sequences activation with the engine.
+        AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = true
+        AudioManager.shared.audioSession.isAutomaticDeactivationEnabled = true
         room.add(delegate: self)
     }
 
@@ -28,7 +32,8 @@ final class CallService: NSObject, ObservableObject {
         do {
             prepareRoom(callId: callId)
             APIClient.mobileDiagnostic(event: "livekit.join.configure", callId: callId, detail: video ? "video" : "audio")
-            try configureAudioSession()
+            // Speaker for video, earpiece for audio — applied to the session LiveKit manages.
+            AudioManager.shared.isSpeakerOutputPreferred = video
             APIClient.mobileDiagnostic(event: "livekit.join.connect.start", callId: callId)
             try await room.connect(url: url, token: token)
             APIClient.mobileDiagnostic(event: "livekit.join.connect.ok", callId: callId)
@@ -102,7 +107,8 @@ final class CallService: NSObject, ObservableObject {
         localVideoTrack = nil
         remoteVideoTrack = nil
         currentCallId = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // LiveKit deactivates the session itself (isAutomaticDeactivationEnabled) once the
+        // engine stops — deactivating it here too races CallKit's own teardown.
         APIClient.mobileDiagnostic(event: "livekit.leave.ok", callId: callId)
     }
 
@@ -113,24 +119,6 @@ final class CallService: NSObject, ObservableObject {
             room.add(delegate: self)
         }
         currentCallId = callId
-    }
-
-    private func configureAudioSession() throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.allowBluetooth, .defaultToSpeaker]
-        )
-        do {
-            try session.setActive(true)
-        } catch {
-            APIClient.mobileDiagnostic(
-                event: "livekit.audio.activate.deferred",
-                callId: currentCallId,
-                detail: String(describing: error)
-            )
-        }
     }
 
     /// Recompute the tracks we render. Track accessors target LiveKit Swift SDK v2.

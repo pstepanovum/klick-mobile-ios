@@ -366,13 +366,22 @@ extension CallKitManager: CXProviderDelegate {
                 CallActivityController.update(status: "Connected", muted: false, isVideo: isVideo)
             } catch {
                 print("CallKit answer failed for \(callId): \(error)")
-                APIClient.mobileDiagnostic(
-                    event: "callkit.answer.failed",
-                    callId: callId,
-                    detail: String(describing: error)
-                )
-                SocketService.shared.emit("call:decline", ["callId": callId])
-                finishCall(callId: callId, status: "Call failed", notifyServer: false, dismissAfter: 500_000_000)
+                // If the call was torn down while we were still connecting (caller hung up
+                // fast, or the peer dropped), the join throws "Cancelled"/"disconnected" —
+                // that's not a real failure, so clean up quietly without a misleading
+                // "Call failed" banner or a spurious decline back to the (gone) caller.
+                if recentlyEndedCallIds.contains(callId) {
+                    APIClient.mobileDiagnostic(event: "callkit.answer.cancelledDuringJoin", callId: callId)
+                    finishCall(callId: callId, status: "Ended", notifyServer: false, dismissAfter: 0)
+                } else {
+                    APIClient.mobileDiagnostic(
+                        event: "callkit.answer.failed",
+                        callId: callId,
+                        detail: String(describing: error)
+                    )
+                    SocketService.shared.emit("call:decline", ["callId": callId])
+                    finishCall(callId: callId, status: "Call failed", notifyServer: false, dismissAfter: 500_000_000)
+                }
             }
         }
     }
@@ -433,6 +442,13 @@ extension CallKitManager: CXProviderDelegate {
         }
     }
 
-    nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {}
-    nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {}
+    // CallKit owns activation/deactivation of the call's audio session; LiveKit (automatic
+    // mode) drives the engine around it. We just record the timing so a device test can
+    // confirm the handoff lines up with the LiveKit join.
+    nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        APIClient.mobileDiagnostic(event: "callkit.audio.didActivate")
+    }
+    nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        APIClient.mobileDiagnostic(event: "callkit.audio.didDeactivate")
+    }
 }
