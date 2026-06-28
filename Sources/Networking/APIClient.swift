@@ -105,7 +105,10 @@ actor APIClient {
     }
 
     private func request<T: Decodable>(_ path: String, method: String, body: Data?, authed: Bool) async throws -> T {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent(String(path.dropFirst())))
+        // Concatenate so query strings (`?username=…`) are preserved — appendingPathComponent
+        // would percent-encode the `?` into the path and 404 the route.
+        guard let url = URL(string: Self.baseURL.absoluteString + path) else { throw APIError.noData }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.httpBody = body
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
