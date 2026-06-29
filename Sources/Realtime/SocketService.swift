@@ -148,7 +148,8 @@ final class SocketService: ObservableObject {
         socket.on("call:cancel") { data, _ in
             guard let dict = data.first as? [String: Any],
                   let callId = dict["callId"] as? String else { return }
-            CallKitManager.shared.handleRemoteCallEnded(callId: callId)
+            // .unanswered → iOS shows "Missed" instead of "Unavailable" in the system call log.
+            CallKitManager.shared.handleRemoteCallEnded(callId: callId, reason: .unanswered)
         }
         socket.on("call:end") { data, _ in
             guard let dict = data.first as? [String: Any],

@@ -263,7 +263,7 @@ final class CallKitManager: NSObject, ObservableObject {
         }
     }
 
-    private func finishCall(callId: String, status: String, notifyServer: Bool, dismissAfter seconds: UInt64 = 1_500_000_000) {
+    private func finishCall(callId: String, status: String, notifyServer: Bool, dismissAfter seconds: UInt64 = 1_500_000_000, endReason: CXCallEndedReason = .remoteEnded) {
         guard !finishingCallIds.contains(callId) else { return }
         Ringback.shared.stop()
         let wasOutgoing = activeCall?.id == callId ? activeCall?.isOutgoing == true : false
@@ -278,7 +278,7 @@ final class CallKitManager: NSObject, ObservableObject {
         if notifyServer {
             Task { await self.finishCallOnServer(callId: callId, wasOutgoing: wasOutgoing, wasConnected: wasConnected) }
         }
-        endSystemCall(callId: callId)
+        endSystemCall(callId: callId, reason: endReason)
         Task {
             await CallService.shared.leave()
             CallActivityController.end()
@@ -340,7 +340,9 @@ final class CallKitManager: NSObject, ObservableObject {
 
     func handlePeerDeclined(callId: String) {
         if activeCall?.id == callId {
-            finishCall(callId: callId, status: "Busy", notifyServer: false)
+            // .unanswered shows "Missed" in the system call log — less confusing than the
+            // "Unavailable" label that .remoteEnded produces for a call that was never answered.
+            finishCall(callId: callId, status: "Busy", notifyServer: false, endReason: .unanswered)
         } else {
             handleRemoteCallEnded(callId: callId)
         }
@@ -349,12 +351,12 @@ final class CallKitManager: NSObject, ObservableObject {
     /// Tear down a call ended remotely. Returns true if a known call was actually dismissed,
     /// so a VoIP `call.end` push can tell whether it still needs to satisfy `mustReport`.
     @discardableResult
-    func handleRemoteCallEnded(callId: String) -> Bool {
+    func handleRemoteCallEnded(callId: String, reason: CXCallEndedReason = .remoteEnded) -> Bool {
         restorePersistedMapping(for: callId)
         guard activeCall?.id == callId || pendingInvites[callId] != nil || callIdToUUID[callId] != nil else {
             return false
         }
-        finishCall(callId: callId, status: "Ended", notifyServer: false, dismissAfter: 500_000_000)
+        finishCall(callId: callId, status: "Ended", notifyServer: false, dismissAfter: 500_000_000, endReason: reason)
         return true
     }
 
@@ -456,6 +458,13 @@ extension CallKitManager: CXProviderDelegate {
                     token: session.token,
                     video: isVideo
                 )
+                // The caller may have hung up while join() was in flight. handleRemoteCallEnded
+                // already set activeCall = nil and scheduled leave() — bail out here so we don't
+                // re-surface a Connected state on a call that's already being torn down.
+                guard !recentlyEndedCallIds.contains(callId) else {
+                    APIClient.mobileDiagnostic(event: "callkit.answer.endedDuringConnect", callId: callId)
+                    return
+                }
                 try await APIClient.shared.mediaJoined(callId: callId)
                 statusText = "Connected"
                 APIClient.mobileDiagnostic(event: "callkit.answer.livekit.ok", callId: callId)

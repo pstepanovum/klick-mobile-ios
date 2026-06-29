@@ -40,12 +40,15 @@ final class CallService: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        // Let LiveKit own the AVAudioSession lifecycle (configure → activate → start engine,
-        // and deactivate on leave). Our previous manual setActive(true) raced CallKit's own
-        // activation and intermittently failed with "Audio Engine Error (-3010)", so ~half of
-        // answered calls connected with no audio. LiveKit sequences activation with the engine.
+        // CallKit owns the AVAudioSession lifecycle: it calls setActive(true) on didActivate
+        // and setActive(false) when the call ends. LiveKit must NOT deactivate the session
+        // on its own (isAutomaticDeactivationEnabled = false), because setEngineAvailability(.none)
+        // in join() would otherwise call setActive(false) on the CallKit-owned session, making
+        // it impossible to re-activate from a locked-screen background context — the root cause
+        // of "answered on locked screen → no audio". isAutomaticConfigurationEnabled stays true
+        // so LiveKit still applies the session category/mode/options when the engine starts.
         AudioManager.shared.audioSession.isAutomaticConfigurationEnabled = true
-        AudioManager.shared.audioSession.isAutomaticDeactivationEnabled = true
+        AudioManager.shared.audioSession.isAutomaticDeactivationEnabled = false
         room.add(delegate: self)
     }
 
@@ -236,8 +239,8 @@ final class CallService: NSObject, ObservableObject {
         audioSessionActive = false
         micPublished = false
         try? AudioManager.shared.setEngineAvailability(.default)
-        // LiveKit deactivates the session itself (isAutomaticDeactivationEnabled) once the
-        // engine stops — deactivating it here too races CallKit's own teardown.
+        // Session deactivation is CallKit's responsibility (isAutomaticDeactivationEnabled = false).
+        // Re-enabling the engine here lets system audio resume after the call ends.
         APIClient.mobileDiagnostic(event: "livekit.leave.ok", callId: callId)
     }
 
