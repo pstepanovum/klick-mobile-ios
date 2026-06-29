@@ -34,6 +34,10 @@ final class CallService: NSObject, ObservableObject {
     /// both call `publishMicIfReady`, whichever is ready last.
     private var micPublished = false
 
+    /// Last audio route we applied based on whether any video is on screen. Drives automatic
+    /// speaker (video) ↔ earpiece (audio-only) switching as cameras turn on/off mid-call.
+    private var videoRouteActive = false
+
     override init() {
         super.init()
         // Let LiveKit own the AVAudioSession lifecycle (configure → activate → start engine,
@@ -62,6 +66,7 @@ final class CallService: NSObject, ObservableObject {
             )
             AudioManager.shared.isSpeakerOutputPreferred = video
             speakerOn = video
+            videoRouteActive = video
             micPublished = false
             // Gate LiveKit's audio engine OFF during connect/publish. It's turned on only AFTER
             // the mic is published (see publishMicIfReady), so capture (input) and playout (output)
@@ -248,6 +253,18 @@ final class CallService: NSObject, ObservableObject {
             callId: currentCallId,
             detail: "localVideo=\(localVideoTrack != nil) remoteVideo=\(remoteVideoTrack != nil)"
         )
+        updateAudioRouteForVideo()
+    }
+
+    /// Keep the loudspeaker on whenever any video is on screen, and fall back to the earpiece
+    /// ("regular phone" mode) the moment both sides have their camera off — without a manual
+    /// toggle. Only acts on a change so a user's manual speaker choice during an audio-only
+    /// stretch isn't overridden until the video state actually flips.
+    private func updateAudioRouteForVideo() {
+        let videoActive = cameraEnabled || localVideoTrack != nil || remoteVideoTrack != nil
+        guard videoActive != videoRouteActive else { return }
+        videoRouteActive = videoActive
+        setSpeaker(videoActive)
     }
 }
 
@@ -284,22 +301,18 @@ extension CallService: RoomDelegate {
     nonisolated func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) {
         Task { @MainActor in
             APIClient.mobileDiagnostic(event: "livekit.remote.subscribe", callId: currentCallId)
-            if let track = publication.track as? VideoTrack {
-                remoteVideoTrack = track
-            } else {
-                refreshTracks()
-            }
+            // refreshTracks recomputes local/remote video AND re-evaluates the speaker/earpiece
+            // route, so the peer turning their camera on flips us to speaker.
+            refreshTracks()
         }
     }
 
     nonisolated func room(_ room: Room, participant: RemoteParticipant, didUnsubscribeTrack publication: RemoteTrackPublication) {
         Task { @MainActor in
             APIClient.mobileDiagnostic(event: "livekit.remote.unsubscribe", callId: currentCallId)
-            if publication.track is VideoTrack {
-                remoteVideoTrack = nil
-            } else {
-                refreshTracks()
-            }
+            // refreshTracks recomputes video state AND re-evaluates the route, so the peer turning
+            // their camera off drops us back to the earpiece ("regular phone" mode).
+            refreshTracks()
         }
     }
 
