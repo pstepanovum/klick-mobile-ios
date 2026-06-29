@@ -96,24 +96,25 @@ struct CallView: View {
     }
 
     private var header: some View {
-        // Over video the name + status ("Connected") sit on a dark capsule with white text so they
-        // stay legible against the remote camera feed; on a voice/avatar call use theme colors.
-        VStack(spacing: 4) {
+        // Over video: the name is plain white text and only the status ("Connected") gets a small
+        // white pill. On a voice/avatar call, use theme colors with no pill.
+        VStack(spacing: 8) {
             Text(call.peerName)
                 .font(KlicFont.title())
                 .foregroundStyle(shouldShowVideo ? Color.white : KlicColor.textPrimary)
-            Text(callKit.statusText)
-                .font(KlicFont.body())
-                .foregroundStyle(shouldShowVideo ? Color.white.opacity(0.85) : KlicColor.textMuted)
-        }
-        .padding(.horizontal, shouldShowVideo ? 18 : 0)
-        .padding(.vertical, shouldShowVideo ? 8 : 0)
-        .background {
             if shouldShowVideo {
-                Capsule().fill(Color.black.opacity(0.35))
+                Text(callKit.statusText)
+                    .font(KlicFont.caption(13))
+                    .foregroundStyle(Color.black.opacity(0.8))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.white))
+            } else {
+                Text(callKit.statusText)
+                    .font(KlicFont.body())
+                    .foregroundStyle(KlicColor.textMuted)
             }
         }
-        .shadow(color: shouldShowVideo ? Color.black.opacity(0.4) : .clear, radius: 4, y: 1)
     }
 
     private var controls: some View {
