@@ -77,6 +77,38 @@ actor APIClient {
         )
     }
 
+    func conversationDetails(id: String) async throws -> GroupConversationDetails {
+        try await get("/conversations/\(id)")
+    }
+
+    func updateGroupConversation(
+        id: String,
+        title: String? = nil,
+        description: String?? = nil,
+        avatarKey: String?? = nil
+    ) async throws -> GroupConversationDetails {
+        try await patch(
+            "/conversations/\(id)",
+            encodable: UpdateGroupConversationRequest(title: title, description: description, avatarKey: avatarKey)
+        )
+    }
+
+    func requestGroupAvatarUpload(conversationId: String, contentType: String, byteSize: Int) async throws -> UploadTicket {
+        try await post("/conversations/\(conversationId)/avatar-upload", body: ["contentType": contentType, "byteSize": byteSize])
+    }
+
+    func addGroupMembers(conversationId: String, userIds: [String]) async throws -> GroupConversationDetails {
+        try await post("/conversations/\(conversationId)/members", body: ["userIds": userIds])
+    }
+
+    func leaveGroup(conversationId: String) async throws -> EmptyResponse {
+        try await post("/conversations/\(conversationId)/leave", body: [:])
+    }
+
+    func deleteGroup(conversationId: String) async throws -> EmptyResponse {
+        try await delete("/conversations/\(conversationId)")
+    }
+
     // MARK: Conversations / messaging
 
     func conversations() async throws -> [Conversation] { try await get("/conversations") }
@@ -262,6 +294,11 @@ actor APIClient {
 
     private func patch<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
         let data = try JSONSerialization.data(withJSONObject: body)
+        return try await request(path, method: "PATCH", body: data, authed: true)
+    }
+
+    private func patch<T: Decodable, Body: Encodable>(_ path: String, encodable body: Body) async throws -> T {
+        let data = try JSONEncoder().encode(body)
         return try await request(path, method: "PATCH", body: data, authed: true)
     }
 

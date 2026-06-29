@@ -54,8 +54,12 @@ struct MessageBubble: View {
     let isMine: Bool
     let isFirst: Bool
     let isLast: Bool
+    var isGroupChat: Bool = false
+    var senderName: String? = nil
+    var senderAvatarURL: String? = nil
     var replyAuthorName: String = ""
     var onCallBack: (String) -> Void = { _ in }
+    var onAvatarTap: (() -> Void)? = nil
     var onLongPress: () -> Void = {}
     var onReactionTap: (String) -> Void = { _ in }
 
@@ -66,6 +70,8 @@ struct MessageBubble: View {
     var body: some View {
         if message.isDeleted {
             DeletedBubble(isMine: isMine)
+        } else if message.isSystem {
+            systemBubble
         } else if message.isCallEvent, let call = message.call {
             CallEventRow(call: call, outgoing: isMine, time: shortTime(message.createdAt), onCallBack: onCallBack)
         } else if message.isSticker, let stickerId = message.stickerId {
@@ -73,6 +79,17 @@ struct MessageBubble: View {
         } else {
             standardBubble
         }
+    }
+
+    private var systemBubble: some View {
+        Text(message.body)
+            .font(KlicFont.caption(12))
+            .foregroundStyle(KlicColor.textMuted)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(KlicColor.surfaceRaised, in: Capsule())
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
     }
 
     private func stickerBubble(_ stickerId: String) -> some View {
@@ -90,46 +107,12 @@ struct MessageBubble: View {
         HStack(alignment: .bottom, spacing: 6) {
             if isMine { Spacer(minLength: 56) }
 
-            VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
-                if !message.attachments.isEmpty {
-                    if let reply = message.replyTo {
-                        ReplyQuoteView(reply: reply, authorName: replyAuthorName)
-                    }
-                    MessageAttachmentsView(
-                        attachments: message.attachments,
-                        isMine: isMine,
-                        showTime: isLast && message.body.isEmpty,
-                        time: shortTime(message.createdAt),
-                        status: message.status
-                    )
-                }
+            if showGroupAvatar {
+                groupAvatar
+            }
 
-                if !message.body.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
-                        if let reply = message.replyTo, message.attachments.isEmpty {
-                            ReplyQuoteView(reply: reply, authorName: replyAuthorName, onPrimary: isMine)
-                        }
-                        HStack(alignment: .bottom, spacing: 6) {
-                            Text(message.body)
-                                .font(KlicFont.body())
-                                .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
-                            if isLast {
-                                inlineTimeStatus(onPrimary: isMine)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(
-                        isMine ? KlicColor.primary : KlicColor.surfaceRaised,
-                        in: UnevenRoundedRectangle(
-                            topLeadingRadius:     isMine ? 18 : topRadius,
-                            bottomLeadingRadius:  isMine ? 18 : bottomRadius,
-                            bottomTrailingRadius: isMine ? tailRadius : 18,
-                            topTrailingRadius:    isMine ? topRadius : 18
-                        )
-                    )
-                }
+            VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+                messageContent
 
                 if !message.reactions.isEmpty {
                     ReactionPills(reactions: message.reactions, onTap: onReactionTap)
@@ -137,9 +120,86 @@ struct MessageBubble: View {
             }
             .onLongPressGesture(minimumDuration: 0.3, perform: onLongPress)
 
+            if showGroupAvatarSpacer {
+                Color.clear.frame(width: 34, height: 34)
+            }
+
             if !isMine { Spacer(minLength: 56) }
         }
         .padding(.vertical, 1)
+    }
+
+    private var messageContent: some View {
+        VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
+            if !message.attachments.isEmpty {
+                if let reply = message.replyTo {
+                    ReplyQuoteView(reply: reply, authorName: replyAuthorName)
+                }
+                MessageAttachmentsView(
+                    attachments: message.attachments,
+                    isMine: isMine,
+                    showTime: isLast && message.body.isEmpty,
+                    time: shortTime(message.createdAt),
+                    status: message.status
+                )
+            }
+
+            if !message.body.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    if showSenderName, let senderName {
+                        Text(senderName)
+                            .font(KlicFont.caption(12))
+                            .foregroundStyle(KlicColor.primary.opacity(0.95))
+                    }
+                    if let reply = message.replyTo, message.attachments.isEmpty {
+                        ReplyQuoteView(reply: reply, authorName: replyAuthorName, onPrimary: isMine)
+                    }
+                    HStack(alignment: .bottom, spacing: 6) {
+                        Text(message.body)
+                            .font(KlicFont.body())
+                            .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
+                        if isLast {
+                            inlineTimeStatus(onPrimary: isMine)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    isMine ? KlicColor.primary : KlicColor.surfaceRaised,
+                    in: UnevenRoundedRectangle(
+                        topLeadingRadius:     isMine ? 18 : topRadius,
+                        bottomLeadingRadius:  isMine ? 18 : bottomRadius,
+                        bottomTrailingRadius: isMine ? tailRadius : 18,
+                        topTrailingRadius:    isMine ? topRadius : 18
+                    )
+                )
+            }
+        }
+    }
+
+    private var showSenderName: Bool {
+        isGroupChat && !isMine && isFirst
+    }
+
+    private var showGroupAvatar: Bool {
+        isGroupChat && !isMine && isLast
+    }
+
+    private var showGroupAvatarSpacer: Bool {
+        isGroupChat && !isMine && !isLast
+    }
+
+    @ViewBuilder
+    private var groupAvatar: some View {
+        if let onAvatarTap {
+            Button(action: onAvatarTap) {
+                AvatarView(url: senderAvatarURL, name: senderName ?? "User", size: 34)
+            }
+            .buttonStyle(.plain)
+        } else {
+            AvatarView(url: senderAvatarURL, name: senderName ?? "User", size: 34)
+        }
     }
 
     @ViewBuilder

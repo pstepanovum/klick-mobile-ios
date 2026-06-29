@@ -67,7 +67,11 @@ private struct ConversationRow: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
-                AvatarView(url: conversation.members.first?.avatarUrl, name: title, size: 52)
+                AvatarView(
+                    url: conversation.type == "GROUP" ? conversation.avatarUrl : conversation.members.first?.avatarUrl,
+                    name: title,
+                    size: 52
+                )
                     .overlay(alignment: .bottomTrailing) {
                         if isOnline {
                             Circle().fill(.green).frame(width: 14, height: 14)

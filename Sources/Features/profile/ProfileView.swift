@@ -9,6 +9,7 @@ struct ProfileView: View {
     let avatarUrl: String?
     var onCall: (String) -> Void          // "AUDIO" | "VIDEO"
     var onMessage: (() -> Void)? = nil    // shown only when provided (e.g. from Friends)
+    var onInvite: (() -> Void)? = nil
 
     @ObservedObject private var socket = SocketService.shared
     @Environment(\.dismiss) private var dismiss
@@ -41,6 +42,9 @@ struct ProfileView: View {
                     CallActionButton(systemName: "video.fill", label: "Video") { onCall("VIDEO"); dismiss() }
                     if let onMessage {
                         CallActionButton(systemName: "message.fill", label: "Message") { onMessage(); dismiss() }
+                    }
+                    if let onInvite {
+                        CallActionButton(systemName: "person.badge.plus.fill", label: "Invite") { onInvite(); dismiss() }
                     }
                 }
                 .padding(.top, 8)

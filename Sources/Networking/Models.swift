@@ -28,6 +28,9 @@ struct Conversation: Codable, Identifiable, Hashable {
     let id: String
     let type: String
     let title: String?
+    let description: String?
+    var avatarUrl: String?
+    let createdById: String?
     let members: [Member]
     let lastMessage: Message?
     var unreadCount: Int?   // present on the conversations list; absent elsewhere
@@ -38,10 +41,36 @@ struct Conversation: Codable, Identifiable, Hashable {
     }
 }
 
+struct GroupConversationDetails: Codable, Identifiable, Hashable {
+    let id: String
+    let type: String
+    let title: String?
+    let description: String?
+    var avatarUrl: String?
+    let createdById: String?
+    let isAdmin: Bool
+    let members: [Member]
+
+    struct Member: Codable, Identifiable, Hashable {
+        let id: String
+        let username: String
+        let displayName: String
+        var avatarUrl: String?
+        let joinedAt: String
+        let isMe: Bool
+    }
+}
+
 struct CreateConversationRequest: Codable {
     var userId: String?
     var title: String?
     var userIds: [String]?
+}
+
+struct UpdateGroupConversationRequest: Codable {
+    var title: String?
+    var description: String??
+    var avatarKey: String??
 }
 
 struct Attachment: Codable, Identifiable, Hashable {
@@ -103,6 +132,7 @@ struct Message: Codable, Identifiable, Hashable {
 
     var isCallEvent: Bool { kind == "CALL_EVENT" }
     var isSticker: Bool { kind == "STICKER" }
+    var isSystem: Bool { kind == "SYSTEM" }
     var isDeleted: Bool { deletedAt != nil }
 
     enum CodingKeys: String, CodingKey {
