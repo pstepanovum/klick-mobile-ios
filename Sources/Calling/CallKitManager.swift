@@ -42,6 +42,9 @@ final class CallKitManager: NSObject, ObservableObject {
         config.maximumCallsPerCallGroup = 1
         config.supportedHandleTypes = [.generic]
         config.includesCallsInRecents = false
+        // Custom incoming-call ringtone (bundled CallKit-compatible sound). CallKit plays this
+        // for incoming calls; falls back to the system ringtone if the resource is missing.
+        config.ringtoneSound = "ring.caf"
         provider = CXProvider(configuration: config)
         super.init()
         provider.setDelegate(self, queue: nil)
