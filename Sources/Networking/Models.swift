@@ -29,6 +29,7 @@ struct Conversation: Codable, Identifiable, Hashable {
     let type: String
     let members: [Member]
     let lastMessage: Message?
+    var unreadCount: Int?   // present on the conversations list; absent elsewhere
 
     struct Member: Codable, Hashable {
         let id: String; let username: String; let displayName: String

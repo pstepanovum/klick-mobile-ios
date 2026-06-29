@@ -55,7 +55,7 @@ struct CallView: View {
 
     private var controls: some View {
         HStack(spacing: 24) {
-            CircleControl(icon: service.micEnabled ? .mic : .micOff) {
+            circleButton(service.micEnabled ? "mic.fill" : "mic.slash.fill") {
                 Task {
                     await service.toggleMic()
                     CallActivityController.update(
@@ -65,12 +65,10 @@ struct CallView: View {
                     )
                 }
             }
-            CircleControl(
-                icon: .callEnd, fill: KlicColor.danger, iconColor: KlicColor.onPrimary, diameter: 72
-            ) {
+            circleButton("phone.down.fill", fill: KlicColor.danger, iconColor: KlicColor.onPrimary, size: 72) {
                 CallKitManager.shared.requestEnd()
             }
-            CircleControl(icon: service.cameraEnabled ? .camera : .cameraOff) {
+            circleButton(service.cameraEnabled ? "video.fill" : "video.slash.fill") {
                 Task {
                     await service.toggleCamera()
                     CallActivityController.update(
@@ -81,16 +79,29 @@ struct CallView: View {
                 }
             }
             if service.cameraEnabled {
-                Button { Task { await service.switchCamera() } } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(KlicColor.textPrimary)
-                        .frame(width: 64, height: 64)
-                        .background(KlicColor.surfaceRaised, in: Circle())
+                circleButton("arrow.triangle.2.circlepath.camera") {
+                    Task { await service.switchCamera() }
                 }
-                .buttonStyle(.plain)
             }
         }
+    }
+
+    // Circular in-call control using a native SF Symbol.
+    private func circleButton(
+        _ systemName: String,
+        fill: Color = KlicColor.surfaceRaised,
+        iconColor: Color = KlicColor.textPrimary,
+        size: CGFloat = 64,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(iconColor)
+                .frame(width: size, height: size)
+                .background(fill, in: Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var shouldShowVideo: Bool {

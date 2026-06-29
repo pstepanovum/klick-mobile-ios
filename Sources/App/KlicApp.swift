@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 @main
 struct KlicApp: App {
@@ -22,6 +23,9 @@ struct KlicApp: App {
                 .onAppear { session.bootstrap() }
                 .onChange(of: scenePhase) { phase in
                     if phase == .active {
+                        // Clear the app-icon badge + delivered banners when the user is back in.
+                        UNUserNotificationCenter.current().setBadgeCount(0)
+                        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
                         if CallKitManager.shared.activeCall == nil {
                             CallActivityController.end()
                         } else {

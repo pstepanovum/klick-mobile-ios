@@ -21,6 +21,7 @@ struct ConversationsView: View {
                     ForEach(filtered) { convo in
                         NavigationLink(value: convo) {
                             ConversationRow(conversation: convo)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -57,24 +58,72 @@ private struct ConversationRow: View {
         return socket.presence[id]?.online == true
     }
 
+    private var unread: Int { conversation.unreadCount ?? 0 }
+
     var body: some View {
-        HStack(spacing: 14) {
-            AvatarView(url: conversation.members.first?.avatarUrl, name: title, size: 52)
-                .overlay(alignment: .bottomTrailing) {
-                    if isOnline {
-                        Circle().fill(.green).frame(width: 14, height: 14)
-                            .overlay(Circle().stroke(KlicColor.surface, lineWidth: 2))
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                AvatarView(url: conversation.members.first?.avatarUrl, name: title, size: 52)
+                    .overlay(alignment: .bottomTrailing) {
+                        if isOnline {
+                            Circle().fill(.green).frame(width: 14, height: 14)
+                                .overlay(Circle().stroke(KlicColor.background, lineWidth: 2))
+                        }
+                    }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(KlicFont.headline()).foregroundStyle(KlicColor.textPrimary)
+                    Text(lastMessageText(conversation.lastMessage))
+                        .font(KlicFont.body(14)).foregroundStyle(KlicColor.textMuted)
+                        .lineLimit(2)
+                }
+                Spacer()
+                // Time (top) + unread count badge (bottom), right-aligned.
+                VStack(alignment: .trailing, spacing: 6) {
+                    if let time = lastMessageTime(conversation.lastMessage) {
+                        Text(time).font(KlicFont.caption(12)).foregroundStyle(KlicColor.textMuted)
+                    }
+                    if unread > 0 {
+                        Text(unread > 99 ? "99+" : "\(unread)")
+                            .font(KlicFont.caption(12).weight(.semibold))
+                            .foregroundStyle(KlicColor.onPrimary)
+                            .padding(.horizontal, 6)
+                            .frame(minWidth: 20, minHeight: 20)
+                            .background(KlicColor.primary, in: Capsule())
                     }
                 }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(KlicFont.headline()).foregroundStyle(KlicColor.textPrimary)
-                Text(conversation.lastMessage?.body ?? "Say hi")
-                    .font(KlicFont.body(14)).foregroundStyle(KlicColor.textMuted).lineLimit(1)
             }
-            Spacer()
+            .padding(.vertical, 12)
+            // Divider inset to start under the text content, not under the avatar.
+            Rectangle()
+                .fill(KlicColor.textPrimary.opacity(0.08))
+                .frame(height: 1)
+                .padding(.leading, 66)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
-        .background(KlicColor.surface, in: RoundedRectangle(cornerRadius: 20))
+    }
+}
+
+/// Short clock time for the last message (e.g. "3:26 PM"), or nil if unknown.
+private func lastMessageTime(_ m: Message?) -> String? {
+    guard let iso = m?.createdAt, !iso.isEmpty else { return nil }
+    let df = ISO8601DateFormatter(); df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let df2 = ISO8601DateFormatter(); df2.formatOptions = [.withInternetDateTime]
+    guard let date = df.date(from: iso) ?? df2.date(from: iso) else { return nil }
+    let f = DateFormatter(); f.dateFormat = "h:mm a"
+    return f.string(from: date)
+}
+
+/// One-line summary of the last message for the chat list (no emoji, per the design system).
+private func lastMessageText(_ m: Message?) -> String {
+    guard let m else { return "Say hi" }
+    if m.isDeleted { return "Message deleted" }
+    if m.isCallEvent { return m.call?.isVideo == true ? "Video call" : "Voice call" }
+    if m.isSticker { return "Sticker" }
+    if !m.body.isEmpty { return m.body }
+    switch m.attachments.first?.kind {
+    case "IMAGE": return "Photo"
+    case "VIDEO": return "Video"
+    case "VOICE": return "Voice message"
+    case .some:   return "File"
+    default:      return "Say hi"
     }
 }
