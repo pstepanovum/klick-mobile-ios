@@ -63,11 +63,11 @@ final class CallService: NSObject, ObservableObject {
             AudioManager.shared.isSpeakerOutputPreferred = video
             speakerOn = video
             micPublished = false
-            // Gate LiveKit's audio engine OFF until CallKit activates the session (provider
-            // didActivate → activateAudioSession()). Auto-subscribing to a remote audio track on
-            // connect would otherwise start the engine immediately on a not-yet-active session.
-            // If CallKit already activated (foreground/outgoing), keep the engine enabled.
-            try? AudioManager.shared.setEngineAvailability(audioSessionActive ? .default : .none)
+            // Gate LiveKit's audio engine OFF during connect/publish. It's turned on only AFTER
+            // the mic is published (see publishMicIfReady), so capture (input) and playout (output)
+            // start together in a single engine pass. Enabling it earlier brought the engine up
+            // output-only and the mic never captured → the peer couldn't hear us.
+            try? AudioManager.shared.setEngineAvailability(.none)
             APIClient.mobileDiagnostic(event: "livekit.join.connect.start", callId: callId)
             try await room.connect(url: url, token: token)
             APIClient.mobileDiagnostic(event: "livekit.join.connect.ok", callId: callId)
@@ -165,12 +165,11 @@ final class CallService: NSObject, ObservableObject {
         }
     }
 
-    /// CallKit activated the call's audio session — now it's safe to run LiveKit's audio engine and
-    /// publish the mic. Per the SDK maintainer, publishing the mic here (session active) is what
-    /// configures the session and starts the engine correctly; doing it earlier leaves no audio.
+    /// CallKit activated the call's audio session — now it's safe to publish the mic and run the
+    /// audio engine. publishMicIfReady publishes the mic and only then enables the engine, so input
+    /// and output start together (enabling the engine before the publish left the mic silent).
     func activateAudioSession() {
         audioSessionActive = true
-        try? AudioManager.shared.setEngineAvailability(.default)
         let callId = currentCallId
         Task { @MainActor in
             if let callId { await publishMicIfReady(callId: callId) }
@@ -195,6 +194,9 @@ final class CallService: NSObject, ObservableObject {
             try await room.localParticipant.setMicrophone(enabled: true)
             micEnabled = true
             APIClient.mobileDiagnostic(event: "livekit.join.mic.ok", callId: callId)
+            // Engine on only NOW — with the mic published, it starts capture + playout in one pass.
+            try? AudioManager.shared.setEngineAvailability(.default)
+            APIClient.mobileDiagnostic(event: "livekit.audio.engineStart", callId: callId)
             refreshTracks()
         } catch {
             micPublished = false
