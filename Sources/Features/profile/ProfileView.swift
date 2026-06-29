@@ -37,10 +37,10 @@ struct ProfileView: View {
                 }
 
                 HStack(spacing: 16) {
-                    CallActionButton(icon: .phone, label: "Audio") { onCall("AUDIO"); dismiss() }
-                    CallActionButton(icon: .video, label: "Video") { onCall("VIDEO"); dismiss() }
+                    CallActionButton(systemName: "phone.fill", label: "Audio") { onCall("AUDIO"); dismiss() }
+                    CallActionButton(systemName: "video.fill", label: "Video") { onCall("VIDEO"); dismiss() }
                     if let onMessage {
-                        CallActionButton(icon: .message, label: "Message") { onMessage(); dismiss() }
+                        CallActionButton(systemName: "message.fill", label: "Message") { onMessage(); dismiss() }
                     }
                 }
                 .padding(.top, 8)
@@ -75,14 +75,16 @@ struct ProfileView: View {
 }
 
 private struct CallActionButton: View {
-    let icon: KlicIcon
+    let systemName: String
     let label: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             VStack(spacing: 8) {
-                Icon(icon, size: 24, color: KlicColor.onPrimary)
+                Image(systemName: systemName)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(KlicColor.onPrimary)
                     .frame(width: 60, height: 60)
                     .background(KlicColor.primary, in: Circle())
                 Text(label)

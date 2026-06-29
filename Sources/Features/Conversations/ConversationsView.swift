@@ -77,7 +77,7 @@ private struct ConversationRow: View {
                         .lineLimit(2)
                 }
                 Spacer()
-                // Time (top) + unread count badge (bottom), right-aligned.
+                // Time pinned top-right; unread count badge just beneath it.
                 VStack(alignment: .trailing, spacing: 6) {
                     if let time = lastMessageTime(conversation.lastMessage) {
                         Text(time).font(KlicFont.caption(12)).foregroundStyle(KlicColor.textMuted)
@@ -91,6 +91,7 @@ private struct ConversationRow: View {
                             .background(KlicColor.primary, in: Capsule())
                     }
                 }
+                .frame(maxHeight: .infinity, alignment: .top)
             }
             .padding(.vertical, 12)
             // Divider inset to start under the text content, not under the avatar.

@@ -107,7 +107,15 @@ struct ChatView: View {
             }
             Button("Cancel", role: .cancel) { dismissMenu() }
         }
-        .task { hiddenIds = Self.loadHidden(conversation.id); await load(); scrollToBottom() }
+        .task {
+            hiddenIds = Self.loadHidden(conversation.id)
+            await load()
+            // Re-scroll a couple of times so the first open lands at the very bottom even
+            // after the keyboard appears and tall items (e.g. stickers) lay out.
+            scrollToBottom()
+            try? await Task.sleep(for: .milliseconds(120)); scrollToBottom()
+            try? await Task.sleep(for: .milliseconds(300)); scrollToBottom()
+        }
         .onAppear { isComposerFocused = true }
         .onDisappear { emitTyping(false) }
         .onChange(of: draft) { _, value in emitTyping(!value.trimmingCharacters(in: .whitespaces).isEmpty) }
@@ -202,70 +210,81 @@ struct ChatView: View {
     // MARK: Message list
 
     private var messageList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    let items = visibleMessages
-                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, msg in
-                        let isMine = msg.senderId == myId
-                        let isFirst = idx == 0 || items[idx - 1].senderId != msg.senderId
-                        let isLast  = idx == items.count - 1 || items[idx + 1].senderId != msg.senderId
+        GeometryReader { outer in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        let items = visibleMessages
+                        ForEach(Array(items.enumerated()), id: \.element.id) { idx, msg in
+                            let isMine = msg.senderId == myId
+                            let isFirst = idx == 0 || items[idx - 1].senderId != msg.senderId
+                            let isLast  = idx == items.count - 1 || items[idx + 1].senderId != msg.senderId
 
-                        if idx == 0 || !sameDay(items[idx - 1].createdAt, msg.createdAt) {
-                            DateSeparator(dateString: msg.createdAt)
+                            if idx == 0 || !sameDay(items[idx - 1].createdAt, msg.createdAt) {
+                                DateSeparator(dateString: msg.createdAt)
+                            }
+
+                            MessageBubble(
+                                message: msg,
+                                isMine: isMine,
+                                isFirst: isFirst,
+                                isLast: isLast,
+                                replyAuthorName: msg.replyTo.map { $0.senderId == myId ? "You" : title } ?? "",
+                                onCallBack: { kind in Task { await startCall(kind: kind) } },
+                                onLongPress: { withAnimation(.easeIn(duration: 0.15)) { menuTarget = msg } },
+                                onReactionTap: { emoji in Task { await react(msg, emoji: emoji) } }
+                            )
+                            .id(msg.id)
                         }
-
-                        MessageBubble(
-                            message: msg,
-                            isMine: isMine,
-                            isFirst: isFirst,
-                            isLast: isLast,
-                            replyAuthorName: msg.replyTo.map { $0.senderId == myId ? "You" : title } ?? "",
-                            onCallBack: { kind in Task { await startCall(kind: kind) } },
-                            onLongPress: { withAnimation(.easeIn(duration: 0.15)) { menuTarget = msg } },
-                            onReactionTap: { emoji in Task { await react(msg, emoji: emoji) } }
-                        )
-                        .id(msg.id)
+                        if peerIsTyping {
+                            HStack { TypingDots(); Spacer(minLength: 56) }
+                                .padding(.vertical, 1)
+                                .id("typing-indicator")
+                                .transition(.opacity)
+                        }
+                        // Bottom marker: reports whether it's within the viewport, so the
+                        // scroll-down button reliably reflects the real scroll position.
+                        Color.clear.frame(height: 1).id("bottom-sentinel")
+                            .background(GeometryReader { g in
+                                Color.clear.preference(
+                                    key: AtBottomKey.self,
+                                    value: g.frame(in: .named("chatScroll")).maxY <= outer.size.height + 60
+                                )
+                            })
                     }
-                    if peerIsTyping {
-                        HStack { TypingDots(); Spacer(minLength: 56) }
-                            .padding(.vertical, 1)
-                            .id("typing-indicator")
-                            .transition(.opacity)
-                    }
-                    // Tracks whether the newest message is on-screen (drives the scroll-down button).
-                    Color.clear.frame(height: 1).id("bottom-sentinel")
-                        .onAppear { atBottom = true }
-                        .onDisappear { atBottom = false }
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-            }
-            .defaultScrollAnchor(.bottom)
-            .scrollIndicators(.hidden)
-            // Scrolling must NOT dismiss the keyboard; a single tap on the chat does.
-            .scrollDismissesKeyboard(.never)
-            .simultaneousGesture(TapGesture().onEnded { isComposerFocused = false })
-            .overlay(alignment: .bottomTrailing) {
-                if !atBottom {
-                    // Programmatic scroll keeps the keyboard open (unlike a user drag).
-                    Button { scrollToBottom() } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(KlicColor.textPrimary)
-                            .frame(width: 40, height: 40)
-                            .background(KlicColor.surfaceRaised, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.trailing, 12)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
                     .padding(.bottom, 8)
-                    .transition(.opacity)
                 }
+                .coordinateSpace(.named("chatScroll"))
+                .defaultScrollAnchor(.bottom)
+                .scrollIndicators(.hidden)
+                // Scrolling must NOT dismiss the keyboard; a single tap on the chat does.
+                .scrollDismissesKeyboard(.never)
+                .simultaneousGesture(TapGesture().onEnded { isComposerFocused = false })
+                .onPreferenceChange(AtBottomKey.self) { atBottom = $0 }
+                .overlay(alignment: .bottomTrailing) {
+                    if !atBottom {
+                        // Programmatic scroll keeps the keyboard open (unlike a user drag).
+                        Button { scrollToBottom() } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(KlicColor.textPrimary)
+                                .frame(width: 40, height: 40)
+                                .background(KlicColor.surfaceRaised, in: Circle())
+                                .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 12)
+                        .padding(.bottom, 8)
+                        .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.15), value: atBottom)
+                .onAppear { scrollProxy = proxy }
+                .onChange(of: peerIsTyping) { _, typing in if typing { scrollToBottom() } }
+                .onChange(of: visibleMessages.count) { _, _ in if atBottom { scrollToBottom() } }
             }
-            .animation(.easeInOut(duration: 0.15), value: atBottom)
-            .onAppear { scrollProxy = proxy }
-            .onChange(of: peerIsTyping) { _, typing in if typing { scrollToBottom() } }
         }
     }
 
@@ -500,4 +519,10 @@ struct ChatView: View {
         else { return }
         CallKitManager.shared.startOutgoing(s, peerName: title, peerId: conversation.members.first?.id)
     }
+}
+
+/// True when the chat's bottom marker is within the viewport (used to hide the scroll-down button).
+private struct AtBottomKey: PreferenceKey {
+    static var defaultValue: Bool = true
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = nextValue() }
 }

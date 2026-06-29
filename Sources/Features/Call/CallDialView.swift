@@ -103,7 +103,9 @@ private struct RecentCallRow: View {
             }
             Spacer()
             Button { Task { await callBack() } } label: {
-                Icon(call.isVideo ? .video : .phone, size: 18, color: KlicColor.onPrimary)
+                Image(systemName: call.isVideo ? "video.fill" : "phone.fill")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(KlicColor.onPrimary)
                     .frame(width: 40, height: 40)
                     .background(KlicColor.primary, in: Circle())
             }
@@ -146,10 +148,10 @@ private struct FriendCallRow: View {
             }
             Spacer()
             HStack(spacing: 10) {
-                RoundCallButton(icon: .phone, fill: KlicColor.primary) {
+                RoundCallButton(systemName: "phone.fill", fill: KlicColor.primary) {
                     Task { await initiateCall(kind: "AUDIO") }
                 }
-                RoundCallButton(icon: .video, fill: KlicColor.surfaceRaised) {
+                RoundCallButton(systemName: "video.fill", fill: KlicColor.surfaceRaised) {
                     Task { await initiateCall(kind: "VIDEO") }
                 }
             }
@@ -168,13 +170,15 @@ private struct FriendCallRow: View {
 }
 
 private struct RoundCallButton: View {
-    let icon: KlicIcon
+    let systemName: String
     let fill: Color
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Icon(icon, size: 18, color: KlicColor.onPrimary)
+            Image(systemName: systemName)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(KlicColor.onPrimary)
                 .frame(width: 40, height: 40)
                 .background(fill, in: Circle())
         }
