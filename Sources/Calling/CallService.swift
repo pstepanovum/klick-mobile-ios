@@ -22,6 +22,11 @@ final class CallService: NSObject, ObservableObject {
     /// state change isn't mistaken for a network drop that should end the call.
     private var isLeaving = false
 
+    /// True once CallKit has reported the audio session active for the current call.
+    /// LiveKit's audio engine stays gated off until then so it can't activate the session
+    /// ahead of CallKit (the cause of the locked-screen "Audio Session Error 802").
+    private var audioSessionActive = false
+
     override init() {
         super.init()
         // Let LiveKit own the AVAudioSession lifecycle (configure → activate → start engine,
@@ -49,6 +54,13 @@ final class CallService: NSObject, ObservableObject {
                 mode: video ? .videoChat : .voiceChat
             )
             AudioManager.shared.isSpeakerOutputPreferred = video
+            // Gate LiveKit's audio engine OFF until CallKit activates the session
+            // (provider didActivate → activateAudioSession()). This lets us connect and publish
+            // mic/camera below WITHOUT LiveKit calling AVAudioSession.setActive() itself — that
+            // call racing ahead of CallKit is what threw "Audio Session Error 802" when answering
+            // on a locked screen, leaving the CallKit timer running with no media. If CallKit has
+            // already activated (e.g. an outgoing call in the foreground), keep the engine enabled.
+            try? AudioManager.shared.setEngineAvailability(audioSessionActive ? .default : .none)
             APIClient.mobileDiagnostic(event: "livekit.join.connect.start", callId: callId)
             try await room.connect(url: url, token: token)
             APIClient.mobileDiagnostic(event: "livekit.join.connect.ok", callId: callId)
@@ -130,6 +142,21 @@ final class CallService: NSObject, ObservableObject {
         }
     }
 
+    /// CallKit activated the call's audio session — now it's safe to run LiveKit's audio engine.
+    /// Enabling availability starts the engine (honoring the mic/playout requested during join)
+    /// on the system-activated session, so audio flows without the 802 race.
+    func activateAudioSession() {
+        audioSessionActive = true
+        try? AudioManager.shared.setEngineAvailability(.default)
+    }
+
+    /// CallKit deactivated the session (call ended / interrupted) — gate the engine back off so a
+    /// later publish can't activate the session before CallKit does on the next call.
+    func deactivateAudioSession() {
+        audioSessionActive = false
+        try? AudioManager.shared.setEngineAvailability(.none)
+    }
+
     func leave() async {
         let callId = currentCallId
         isLeaving = true
@@ -140,6 +167,10 @@ final class CallService: NSObject, ObservableObject {
         localVideoTrack = nil
         remoteVideoTrack = nil
         currentCallId = nil
+        // Reset the audio gate for the next call. Re-enable engine availability so any non-call
+        // audio isn't left disabled; the next join() re-gates it off until CallKit activates.
+        audioSessionActive = false
+        try? AudioManager.shared.setEngineAvailability(.default)
         // LiveKit deactivates the session itself (isAutomaticDeactivationEnabled) once the
         // engine stops — deactivating it here too races CallKit's own teardown.
         APIClient.mobileDiagnostic(event: "livekit.leave.ok", callId: callId)

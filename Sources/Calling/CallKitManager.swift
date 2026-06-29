@@ -536,13 +536,16 @@ extension CallKitManager: CXProviderDelegate {
         }
     }
 
-    // CallKit owns activation/deactivation of the call's audio session; LiveKit (automatic
-    // mode) drives the engine around it. We just record the timing so a device test can
-    // confirm the handoff lines up with the LiveKit join.
+    // CallKit owns activation/deactivation of the call's audio session. LiveKit's audio engine is
+    // gated OFF during join until this fires, so it can't activate the session ahead of CallKit
+    // (the locked-screen "Audio Session Error 802" / running-timer-but-no-audio bug). On
+    // didActivate we enable the engine on the now-active session; on didDeactivate we gate it off.
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         APIClient.mobileDiagnostic(event: "callkit.audio.didActivate")
+        Task { @MainActor in CallService.shared.activateAudioSession() }
     }
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         APIClient.mobileDiagnostic(event: "callkit.audio.didDeactivate")
+        Task { @MainActor in CallService.shared.deactivateAudioSession() }
     }
 }
