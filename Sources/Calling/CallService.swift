@@ -27,6 +27,11 @@ final class CallService: NSObject, ObservableObject {
     /// ahead of CallKit (the cause of the locked-screen "Audio Session Error 802").
     private var audioSessionActive = false
 
+    /// Whether we've published the mic for the current call yet. The mic is published only after
+    /// CallKit activates the session, and exactly once — `join()` and `activateAudioSession()`
+    /// both call `publishMicIfReady`, whichever is ready last.
+    private var micPublished = false
+
     override init() {
         super.init()
         // Let LiveKit own the AVAudioSession lifecycle (configure → activate → start engine,
@@ -54,39 +59,31 @@ final class CallService: NSObject, ObservableObject {
                 mode: video ? .videoChat : .voiceChat
             )
             AudioManager.shared.isSpeakerOutputPreferred = video
-            // Configure the call's audio session category up front WITHOUT activating it, so CallKit
-            // has a ready session to activate and reliably sends provider(didActivate:). With the
-            // engine gated off (below) LiveKit won't configure the session itself, and a VoIP
-            // cold-start answer then misses didActivate entirely → the call connects but the mic/
-            // audio never turn on. Setting the category here makes the activation deterministic.
-            try? AVAudioSession.sharedInstance().setCategory(
-                .playAndRecord,
-                mode: video ? .videoChat : .voiceChat,
-                options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay]
-            )
-            // Gate LiveKit's audio engine OFF until CallKit activates the session
-            // (provider didActivate → activateAudioSession()). This lets us connect and publish
-            // mic/camera below WITHOUT LiveKit calling AVAudioSession.setActive() itself — that
-            // call racing ahead of CallKit is what threw "Audio Session Error 802" when answering
-            // on a locked screen, leaving the CallKit timer running with no media. If CallKit has
-            // already activated (e.g. an outgoing call in the foreground), keep the engine enabled.
+            micPublished = false
+            // Gate LiveKit's audio engine OFF until CallKit activates the session (provider
+            // didActivate → activateAudioSession()). Auto-subscribing to a remote audio track on
+            // connect would otherwise start the engine immediately on a not-yet-active session.
+            // If CallKit already activated (foreground/outgoing), keep the engine enabled.
             try? AudioManager.shared.setEngineAvailability(audioSessionActive ? .default : .none)
             APIClient.mobileDiagnostic(event: "livekit.join.connect.start", callId: callId)
             try await room.connect(url: url, token: token)
             APIClient.mobileDiagnostic(event: "livekit.join.connect.ok", callId: callId)
-            APIClient.mobileDiagnostic(event: "livekit.join.mic.start", callId: callId)
-            try await room.localParticipant.setMicrophone(enabled: true)
-            APIClient.mobileDiagnostic(event: "livekit.join.mic.ok", callId: callId)
+            isConnected = true
+            // Camera is video-only and doesn't touch the audio session, so publish it right away
+            // (this is why a locked-screen answer showed video but no audio).
             if video {
                 APIClient.mobileDiagnostic(event: "livekit.join.camera.start", callId: callId)
                 try await room.localParticipant.setCamera(enabled: true)
                 APIClient.mobileDiagnostic(event: "livekit.join.camera.ok", callId: callId)
             }
-            isConnected = true
-            micEnabled = true
             cameraEnabled = video
             refreshTracks()
-            scheduleAudioEngineFallback(callId: callId)
+            // Per the LiveKit maintainer's CallKit guidance (issue #181): publish the mic only
+            // once CallKit has activated the audio session — publishing it during connect (before
+            // the session is active) is what left locked-screen answers silent and even delayed
+            // CallKit's didActivate. If CallKit already activated, publish now; otherwise
+            // activateAudioSession() does it the moment didActivate fires.
+            await publishMicIfReady(callId: callId)
         } catch {
             print("CallService.join failed: \(error)")
             APIClient.mobileDiagnostic(event: "livekit.join.failed", callId: callId, detail: String(describing: error))
@@ -153,12 +150,16 @@ final class CallService: NSObject, ObservableObject {
         }
     }
 
-    /// CallKit activated the call's audio session — now it's safe to run LiveKit's audio engine.
-    /// Enabling availability starts the engine (honoring the mic/playout requested during join)
-    /// on the system-activated session, so audio flows without the 802 race.
+    /// CallKit activated the call's audio session — now it's safe to run LiveKit's audio engine and
+    /// publish the mic. Per the SDK maintainer, publishing the mic here (session active) is what
+    /// configures the session and starts the engine correctly; doing it earlier leaves no audio.
     func activateAudioSession() {
         audioSessionActive = true
         try? AudioManager.shared.setEngineAvailability(.default)
+        let callId = currentCallId
+        Task { @MainActor in
+            if let callId { await publishMicIfReady(callId: callId) }
+        }
     }
 
     /// CallKit deactivated the session (call ended / interrupted) — gate the engine back off so a
@@ -168,16 +169,25 @@ final class CallService: NSObject, ObservableObject {
         try? AudioManager.shared.setEngineAvailability(.none)
     }
 
-    /// Safety net for VoIP cold-start answers where CallKit never sends `didActivate`: if the
-    /// session still isn't reported active a beat after we've connected, enable the audio engine
-    /// ourselves so audio isn't silently dead. The delay lets a real (locked-screen) `didActivate`
-    /// win first; if it already fired, this is a no-op. `activateAudioSession()` is idempotent.
-    private func scheduleAudioEngineFallback(callId: String) {
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            guard currentCallId == callId, isConnected, !audioSessionActive else { return }
-            APIClient.mobileDiagnostic(event: "livekit.audio.engineFallback", callId: callId)
-            try? AudioManager.shared.setEngineAvailability(.default)
+    /// Publish the mic for `callId` exactly once, and only when both the room is connected AND
+    /// CallKit has activated the audio session. Called from `join()` (after connect) and from
+    /// `activateAudioSession()` (on didActivate) — whichever readies last actually publishes.
+    private func publishMicIfReady(callId: String) async {
+        guard currentCallId == callId, isConnected, audioSessionActive, !micPublished else { return }
+        micPublished = true
+        do {
+            APIClient.mobileDiagnostic(event: "livekit.join.mic.start", callId: callId)
+            try await room.localParticipant.setMicrophone(enabled: true)
+            micEnabled = true
+            APIClient.mobileDiagnostic(event: "livekit.join.mic.ok", callId: callId)
+            refreshTracks()
+        } catch {
+            micPublished = false
+            APIClient.mobileDiagnostic(
+                event: "livekit.join.mic.failed",
+                callId: callId,
+                detail: String(describing: error)
+            )
         }
     }
 
@@ -194,6 +204,7 @@ final class CallService: NSObject, ObservableObject {
         // Reset the audio gate for the next call. Re-enable engine availability so any non-call
         // audio isn't left disabled; the next join() re-gates it off until CallKit activates.
         audioSessionActive = false
+        micPublished = false
         try? AudioManager.shared.setEngineAvailability(.default)
         // LiveKit deactivates the session itself (isAutomaticDeactivationEnabled) once the
         // engine stops — deactivating it here too races CallKit's own teardown.
