@@ -10,12 +10,16 @@ struct FriendsView: View {
     @State private var statusText: String?
     @State private var openedConversation: Conversation?
     @State private var selectedFriend: User?
+    @State private var isCreatingGroup = false
+    @State private var groupTitle = ""
+    @State private var selectedFriendIds: Set<String> = []
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     addFriendSection
+                    createGroupSection
                     if !requests.isEmpty { requestsSection }
                     friendsSection
                     VStack(spacing: 6) {
@@ -66,6 +70,32 @@ struct FriendsView: View {
         }
     }
 
+    private var createGroupSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Create group").font(KlicFont.headline()).foregroundStyle(KlicColor.textPrimary)
+            HStack(spacing: 10) {
+                KlicTextField(placeholder: "Group name", text: $groupTitle)
+                Button {
+                    if isCreatingGroup, selectedFriendIds.count >= 2, !groupTitle.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Task { await createGroup() }
+                    } else {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            isCreatingGroup.toggle()
+                            if !isCreatingGroup { selectedFriendIds.removeAll() }
+                        }
+                    }
+                } label: {
+                    Icon(isCreatingGroup ? .message : .addUser, size: 22, color: KlicColor.onPrimary)
+                        .frame(width: 50, height: 50)
+                        .background(KlicColor.primary, in: Circle())
+                }
+            }
+            Text(groupStatusText)
+                .font(KlicFont.caption())
+                .foregroundStyle(KlicColor.textMuted)
+        }
+    }
+
     // MARK: Requests
 
     private var requestsSection: some View {
@@ -103,7 +133,13 @@ struct FriendsView: View {
                     .font(KlicFont.body(14)).foregroundStyle(KlicColor.textMuted)
             }
             ForEach(friends) { friend in
-                Button { selectedFriend = friend } label: {
+                Button {
+                    if isCreatingGroup {
+                        toggleFriendSelection(friend.id)
+                    } else {
+                        selectedFriend = friend
+                    }
+                } label: {
                     HStack(spacing: 12) {
                         AvatarView(url: friend.avatarUrl, name: friend.displayName, size: 44)
                             .overlay(alignment: .bottomTrailing) {
@@ -117,9 +153,15 @@ struct FriendsView: View {
                             Text("@\(friend.username)").font(KlicFont.caption()).foregroundStyle(KlicColor.textMuted)
                         }
                         Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(KlicColor.textMuted)
+                        if isCreatingGroup {
+                            Image(systemName: selectedFriendIds.contains(friend.id) ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(selectedFriendIds.contains(friend.id) ? KlicColor.primary : KlicColor.textMuted)
+                        } else {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(KlicColor.textMuted)
+                        }
                     }
                     .padding(12).background(KlicColor.surface, in: RoundedRectangle(cornerRadius: 18))
                 }
@@ -160,6 +202,34 @@ struct FriendsView: View {
 
     private func openChat(with friend: User) async {
         openedConversation = try? await APIClient.shared.openConversation(userId: friend.id)
+    }
+
+    private func createGroup() async {
+        let title = groupTitle.trimmingCharacters(in: .whitespaces)
+        let ids = Array(selectedFriendIds)
+        guard ids.count >= 2, !title.isEmpty else { return }
+        openedConversation = try? await APIClient.shared.createGroupConversation(title: title, userIds: ids)
+        if openedConversation != nil {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isCreatingGroup = false
+                groupTitle = ""
+                selectedFriendIds.removeAll()
+            }
+        }
+    }
+
+    private func toggleFriendSelection(_ id: String) {
+        if selectedFriendIds.contains(id) { selectedFriendIds.remove(id) }
+        else { selectedFriendIds.insert(id) }
+    }
+
+    private var groupStatusText: String {
+        if !isCreatingGroup { return "Pick friends and create a shared chat." }
+        switch selectedFriendIds.count {
+        case 0: return "Select at least two friends below."
+        case 1: return "Select one more friend."
+        default: return "\(selectedFriendIds.count) selected"
+        }
     }
 
     private func callFriend(_ friend: User, kind: String) async {

@@ -27,6 +27,7 @@ struct AuthResponse: Codable {
 struct Conversation: Codable, Identifiable, Hashable {
     let id: String
     let type: String
+    let title: String?
     let members: [Member]
     let lastMessage: Message?
     var unreadCount: Int?   // present on the conversations list; absent elsewhere
@@ -35,6 +36,12 @@ struct Conversation: Codable, Identifiable, Hashable {
         let id: String; let username: String; let displayName: String
         var avatarUrl: String?
     }
+}
+
+struct CreateConversationRequest: Codable {
+    var userId: String?
+    var title: String?
+    var userIds: [String]?
 }
 
 struct Attachment: Codable, Identifiable, Hashable {

@@ -67,7 +67,14 @@ actor APIClient {
     }
 
     func openConversation(userId: String) async throws -> Conversation {
-        try await post("/conversations", body: ["userId": userId])
+        try await post("/conversations", encodable: CreateConversationRequest(userId: userId, title: nil, userIds: nil))
+    }
+
+    func createGroupConversation(title: String, userIds: [String]) async throws -> Conversation {
+        try await post(
+            "/conversations",
+            encodable: CreateConversationRequest(userId: nil, title: title, userIds: userIds)
+        )
     }
 
     // MARK: Conversations / messaging
@@ -245,6 +252,11 @@ actor APIClient {
 
     private func post<T: Decodable>(_ path: String, body: [String: Any], authed: Bool = true) async throws -> T {
         let data = try JSONSerialization.data(withJSONObject: body)
+        return try await request(path, method: "POST", body: data, authed: authed)
+    }
+
+    private func post<T: Decodable, Body: Encodable>(_ path: String, encodable body: Body, authed: Bool = true) async throws -> T {
+        let data = try JSONEncoder().encode(body)
         return try await request(path, method: "POST", body: data, authed: authed)
     }
 

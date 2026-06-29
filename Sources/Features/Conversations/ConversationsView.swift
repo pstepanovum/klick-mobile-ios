@@ -8,8 +8,11 @@ struct ConversationsView: View {
         guard !searchText.isEmpty else { return conversations }
         let q = searchText.lowercased()
         return conversations.filter {
-            ($0.members.first?.displayName.lowercased().contains(q) ?? false) ||
-            ($0.members.first?.username.lowercased().contains(q) ?? false) ||
+            conversationTitle($0).lowercased().contains(q) ||
+            $0.members.contains {
+                $0.displayName.lowercased().contains(q) ||
+                $0.username.lowercased().contains(q)
+            } ||
             ($0.lastMessage?.body.lowercased().contains(q) ?? false)
         }
     }
@@ -52,8 +55,9 @@ private struct ConversationRow: View {
     let conversation: Conversation
     @ObservedObject private var socket = SocketService.shared
 
-    var title: String { conversation.members.first?.displayName ?? "Direct" }
+    var title: String { conversationTitle(conversation) }
     private var isOnline: Bool {
+        guard conversation.type == "DIRECT" else { return false }
         guard let id = conversation.members.first?.id else { return false }
         return socket.presence[id]?.online == true
     }
@@ -72,6 +76,12 @@ private struct ConversationRow: View {
                     }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(KlicFont.headline()).foregroundStyle(KlicColor.textPrimary)
+                    if conversation.type == "GROUP" {
+                        Text(groupMemberSummary(conversation))
+                            .font(KlicFont.caption())
+                            .foregroundStyle(KlicColor.textMuted)
+                            .lineLimit(1)
+                    }
                     Text(lastMessageText(conversation.lastMessage))
                         .font(KlicFont.body(14)).foregroundStyle(KlicColor.textMuted)
                         .lineLimit(2)
@@ -106,6 +116,22 @@ private struct ConversationRow: View {
                 .padding(.leading, 66)
         }
     }
+}
+
+private func conversationTitle(_ conversation: Conversation) -> String {
+    if conversation.type == "GROUP" {
+        if let title = conversation.title, !title.trimmingCharacters(in: .whitespaces).isEmpty {
+            return title
+        }
+        let members = conversation.members.map(\.displayName).joined(separator: ", ")
+        return members.isEmpty ? "Group" : members
+    }
+    return conversation.members.first?.displayName ?? "Direct"
+}
+
+private func groupMemberSummary(_ conversation: Conversation) -> String {
+    let members = conversation.members.map(\.displayName).joined(separator: ", ")
+    return members.isEmpty ? "No members yet" : members
 }
 
 /// Last-message stamp for the chat list: clock time today (e.g. "3:26 PM"), "MM/dd" earlier

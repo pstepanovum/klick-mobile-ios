@@ -37,7 +37,15 @@ struct ChatView: View {
     private enum AttachAction { case photos, camera, file }
     @State private var pendingAttach: AttachAction?
 
-    var title: String { conversation.members.first?.displayName ?? "Chat" }
+    private var isDirect: Bool { conversation.type == "DIRECT" }
+    var title: String {
+        if let groupTitle = conversation.title?.trimmingCharacters(in: .whitespaces), !groupTitle.isEmpty {
+            return groupTitle
+        }
+        if isDirect { return conversation.members.first?.displayName ?? "Chat" }
+        let members = conversation.members.map(\.displayName).joined(separator: ", ")
+        return members.isEmpty ? "Group" : members
+    }
     var myId: String? { session.currentUser?.id }
 
     /// Messages minus anything the user deleted just for themselves (local-only).
@@ -74,15 +82,17 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) { chatHeader }
             ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 20) {
-                    Button { Task { await startCall(kind: "AUDIO") } } label: {
-                        Image(systemName: "phone.fill").font(.system(size: 18))
+                if isDirect {
+                    HStack(spacing: 20) {
+                        Button { Task { await startCall(kind: "AUDIO") } } label: {
+                            Image(systemName: "phone.fill").font(.system(size: 18))
+                        }
+                        .disabled(isStartingCall)
+                        Button { Task { await startCall(kind: "VIDEO") } } label: {
+                            Image(systemName: "video.fill").font(.system(size: 18))
+                        }
+                        .disabled(isStartingCall)
                     }
-                    .disabled(isStartingCall)
-                    Button { Task { await startCall(kind: "VIDEO") } } label: {
-                        Image(systemName: "video.fill").font(.system(size: 18))
-                    }
-                    .disabled(isStartingCall)
                 }
             }
         }
@@ -156,7 +166,7 @@ struct ChatView: View {
 
     // Tappable header → the peer's profile, with live presence underneath the name.
     @ViewBuilder private var chatHeader: some View {
-        if let peer = conversation.members.first {
+        if isDirect, let peer = conversation.members.first {
             NavigationLink {
                 ProfileView(
                     userId: peer.id, username: peer.username,
@@ -179,16 +189,32 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
         } else {
-            Text(title).font(KlicFont.headline(16)).foregroundStyle(KlicColor.textPrimary)
+            HStack(spacing: 8) {
+                AvatarView(url: nil, name: title, size: 32)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                        .font(KlicFont.headline(16))
+                        .foregroundStyle(KlicColor.textPrimary)
+                    if let sub = headerSubtitle {
+                        Text(sub)
+                            .font(KlicFont.caption(11))
+                            .foregroundStyle(KlicColor.textMuted)
+                    }
+                }
+            }
         }
     }
 
     private var isPeerOnline: Bool {
+        guard isDirect else { return false }
         guard let id = conversation.members.first?.id else { return false }
         return socket.presence[id]?.online == true
     }
 
     private var headerSubtitle: String? {
+        if !isDirect {
+            return "\(conversation.members.count + 1) members"
+        }
         guard let id = conversation.members.first?.id else { return nil }
         if socket.presence[id]?.online == true { return "Online" }
         guard let date = socket.presence[id]?.lastSeen else { return nil }
@@ -546,6 +572,7 @@ struct ChatView: View {
     }
 
     private func startCall(kind: String) async {
+        guard isDirect else { return }
         guard !isStartingCall else { return }
         isStartingCall = true
         defer { isStartingCall = false }
