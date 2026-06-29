@@ -12,10 +12,15 @@ final class CallService: NSObject, ObservableObject {
     private var currentCallId: String?
 
     @Published private(set) var isConnected = false
+    @Published private(set) var isReconnecting = false
     @Published private(set) var micEnabled = true
     @Published private(set) var cameraEnabled = false
     @Published private(set) var localVideoTrack: VideoTrack?
     @Published private(set) var remoteVideoTrack: VideoTrack?
+
+    /// Set while we're tearing the room down on purpose, so the resulting `.disconnected`
+    /// state change isn't mistaken for a network drop that should end the call.
+    private var isLeaving = false
 
     override init() {
         super.init()
@@ -30,6 +35,8 @@ final class CallService: NSObject, ObservableObject {
 
     func join(callId: String, url: String, token: String, video: Bool) async throws {
         do {
+            isLeaving = false
+            isReconnecting = false
             prepareRoom(callId: callId)
             APIClient.mobileDiagnostic(event: "livekit.join.configure", callId: callId, detail: video ? "video" : "audio")
             // Hand LiveKit a fixed, valid session configuration instead of letting it compute
@@ -107,11 +114,29 @@ final class CallService: NSObject, ObservableObject {
     func toggleMic() async { await setMic(enabled: !micEnabled) }
     func toggleCamera() async { await setCamera(enabled: !cameraEnabled) }
 
+    /// Flip between the front and back camera mid-call.
+    func switchCamera() async {
+        guard let track = localVideoTrack as? LocalVideoTrack,
+              let capturer = track.capturer as? CameraCapturer else { return }
+        do {
+            _ = try await capturer.switchCameraPosition()
+            APIClient.mobileDiagnostic(event: "livekit.camera.switch.ok", callId: currentCallId)
+        } catch {
+            APIClient.mobileDiagnostic(
+                event: "livekit.camera.switch.failed",
+                callId: currentCallId,
+                detail: String(describing: error)
+            )
+        }
+    }
+
     func leave() async {
         let callId = currentCallId
+        isLeaving = true
         APIClient.mobileDiagnostic(event: "livekit.leave.start", callId: callId)
         await room.disconnect()
         isConnected = false
+        isReconnecting = false
         localVideoTrack = nil
         remoteVideoTrack = nil
         currentCallId = nil
@@ -144,6 +169,35 @@ final class CallService: NSObject, ObservableObject {
 }
 
 extension CallService: RoomDelegate {
+    // LiveKit drives reconnection automatically across network changes (e.g. WiFi↔cellular).
+    // We surface it so the call survives the blip with a "Reconnecting…" status, and only end
+    // the call if the connection is lost terminally (and it wasn't a user-initiated hang-up).
+    nonisolated func room(_ room: Room, didUpdateConnectionState connectionState: ConnectionState, from oldConnectionState: ConnectionState) {
+        Task { @MainActor in
+            APIClient.mobileDiagnostic(
+                event: "livekit.connectionState",
+                callId: currentCallId,
+                detail: "\(oldConnectionState) -> \(connectionState)"
+            )
+            switch connectionState {
+            case .reconnecting:
+                isReconnecting = true
+                CallKitManager.shared.handleReconnecting(callId: currentCallId)
+            case .connected:
+                isReconnecting = false
+                CallKitManager.shared.handleReconnected(callId: currentCallId)
+            case .disconnected:
+                isReconnecting = false
+                if !isLeaving, let callId = currentCallId {
+                    APIClient.mobileDiagnostic(event: "livekit.connection.lost", callId: callId)
+                    CallKitManager.shared.handleMediaPeerDisconnected(callId: callId)
+                }
+            default:
+                break
+            }
+        }
+    }
+
     nonisolated func room(_ room: Room, participant: RemoteParticipant, didSubscribeTrack publication: RemoteTrackPublication) {
         Task { @MainActor in
             APIClient.mobileDiagnostic(event: "livekit.remote.subscribe", callId: currentCallId)

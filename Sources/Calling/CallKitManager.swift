@@ -311,6 +311,27 @@ final class CallKitManager: NSObject, ObservableObject {
         CallActivityController.update(status: "Connected", muted: false, isVideo: activeCall?.isVideo ?? false)
     }
 
+    /// LiveKit is re-establishing media after a network change — keep the call, show the state.
+    func handleReconnecting(callId: String?) {
+        guard let callId, activeCall?.id == callId, statusText == "Connected" else { return }
+        statusText = "Reconnecting…"
+        CallActivityController.update(
+            status: "Reconnecting…",
+            muted: !CallService.shared.micEnabled,
+            isVideo: activeCall?.isVideo ?? false
+        )
+    }
+
+    func handleReconnected(callId: String?) {
+        guard let callId, activeCall?.id == callId, statusText == "Reconnecting…" else { return }
+        statusText = "Connected"
+        CallActivityController.update(
+            status: "Connected",
+            muted: !CallService.shared.micEnabled,
+            isVideo: activeCall?.isVideo ?? false
+        )
+    }
+
     func handlePeerDeclined(callId: String) {
         if activeCall?.id == callId {
             finishCall(callId: callId, status: "Busy", notifyServer: false)

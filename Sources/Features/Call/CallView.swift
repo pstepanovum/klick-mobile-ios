@@ -80,6 +80,16 @@ struct CallView: View {
                     )
                 }
             }
+            if service.cameraEnabled {
+                Button { Task { await service.switchCamera() } } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath.camera")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(KlicColor.textPrimary)
+                        .frame(width: 64, height: 64)
+                        .background(KlicColor.surfaceRaised, in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
