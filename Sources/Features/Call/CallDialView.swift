@@ -76,6 +76,7 @@ private struct SectionHeader: View {
 
 private struct RecentCallRow: View {
     let call: RecentCall
+    @State private var isCalling = false
 
     private var missed: Bool { call.outcome != "completed" }
     private var subtitle: String {
@@ -110,6 +111,7 @@ private struct RecentCallRow: View {
                     .background(KlicColor.primary, in: Circle())
             }
             .buttonStyle(.plain)
+            .disabled(isCalling)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
@@ -117,6 +119,9 @@ private struct RecentCallRow: View {
     }
 
     private func callBack() async {
+        guard !isCalling else { return }
+        isCalling = true
+        defer { isCalling = false }
         guard let session = try? await APIClient.shared.startCall(conversationId: call.conversationId, kind: call.kind)
         else { return }
         await CallKitManager.shared.startOutgoing(session, peerName: call.peer?.displayName ?? "Call", peerId: call.peer?.id)
@@ -134,6 +139,7 @@ private struct RecentCallRow: View {
 
 private struct FriendCallRow: View {
     let friend: User
+    @State private var isCalling = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -151,9 +157,11 @@ private struct FriendCallRow: View {
                 RoundCallButton(systemName: "phone.fill", fill: KlicColor.primary) {
                     Task { await initiateCall(kind: "AUDIO") }
                 }
+                .disabled(isCalling)
                 RoundCallButton(systemName: "video.fill", fill: KlicColor.surfaceRaised) {
                     Task { await initiateCall(kind: "VIDEO") }
                 }
+                .disabled(isCalling)
             }
         }
         .padding(.vertical, 10)
@@ -162,6 +170,9 @@ private struct FriendCallRow: View {
     }
 
     private func initiateCall(kind: String) async {
+        guard !isCalling else { return }
+        isCalling = true
+        defer { isCalling = false }
         guard let convo = try? await APIClient.shared.openConversation(userId: friend.id),
               let session = try? await APIClient.shared.startCall(conversationId: convo.id, kind: kind)
         else { return }

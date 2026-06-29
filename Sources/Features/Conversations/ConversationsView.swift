@@ -82,7 +82,7 @@ private struct ConversationRow: View {
                     if let stamp = lastMessageStamp(conversation.lastMessage) {
                         HStack(spacing: 3) {
                             if let status = conversation.lastMessage?.status {
-                                ConversationTick(status: status)
+                                MessageTicks(status: status)
                             }
                             Text(stamp).font(KlicFont.caption(12)).foregroundStyle(KlicColor.textMuted)
                         }
@@ -125,22 +125,6 @@ private func lastMessageStamp(_ m: Message?) -> String? {
         f.dateFormat = "MM/dd/yy"
     }
     return f.string(from: date)
-}
-
-/// Compact read-status tick for the chat list (own last message only). Gray until read, green after.
-private struct ConversationTick: View {
-    let status: String   // "sent" | "delivered" | "read"
-    var body: some View {
-        let isRead = status == "read"
-        let single = status == "sent"
-        ZStack(alignment: .trailing) {
-            if !single {
-                Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).offset(x: -4)
-            }
-            Image(systemName: "checkmark").font(.system(size: 8, weight: .bold))
-        }
-        .foregroundStyle(isRead ? KlicColor.read : KlicColor.textMuted)
-    }
 }
 
 /// One-line summary of the last message for the chat list (no emoji, per the design system).

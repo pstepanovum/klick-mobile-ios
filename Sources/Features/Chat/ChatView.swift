@@ -9,6 +9,9 @@ struct ChatView: View {
     @StateObject private var socket = SocketService.shared
 
     @State private var messages: [Message] = []
+    @State private var hasMore = false
+    @State private var isLoadingMore = false
+    @State private var initialLoadDone = false
     @State private var draft = ""
     @State private var scrollProxy: ScrollViewProxy?
     @State private var atBottom = true
@@ -29,6 +32,7 @@ struct ChatView: View {
     @State private var deleteTarget: Message?
     @State private var hiddenIds: Set<String> = []
     @State private var lastTypingSent = Date.distantPast
+    @State private var isStartingCall = false
 
     private enum AttachAction { case photos, camera, file }
     @State private var pendingAttach: AttachAction?
@@ -74,9 +78,11 @@ struct ChatView: View {
                     Button { Task { await startCall(kind: "AUDIO") } } label: {
                         Image(systemName: "phone.fill").font(.system(size: 18))
                     }
+                    .disabled(isStartingCall)
                     Button { Task { await startCall(kind: "VIDEO") } } label: {
                         Image(systemName: "video.fill").font(.system(size: 18))
                     }
+                    .disabled(isStartingCall)
                 }
             }
         }
@@ -110,16 +116,12 @@ struct ChatView: View {
         .task {
             hiddenIds = Self.loadHidden(conversation.id)
             await load()
-            // Re-scroll a couple of times so the first open lands at the very bottom even
-            // after the keyboard appears and tall items (e.g. stickers) lay out.
-            scrollToBottom()
-            try? await Task.sleep(for: .milliseconds(120)); scrollToBottom()
-            try? await Task.sleep(for: .milliseconds(300)); scrollToBottom()
+            scrollToBottom(animated: false)
+            initialLoadDone = true
         }
         .onAppear { isComposerFocused = true }
         .onDisappear { emitTyping(false) }
         .onChange(of: draft) { _, value in emitTyping(!value.trimmingCharacters(in: .whitespaces).isEmpty) }
-        .onChange(of: isComposerFocused) { _, focused in if focused { scrollToBottom() } }
         .onReceive(socket.$lastMessage.compactMap { $0 }) { msg in
             guard msg.conversationId == conversation.id else { return }
             // Upsert by id — the server echoes our own sends back for multi-device sync.
@@ -214,6 +216,14 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) {
+                        if isLoadingMore {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                        } else if hasMore {
+                            Color.clear.frame(height: 1)
+                                .onAppear { Task { await loadMore() } }
+                        }
                         let items = visibleMessages
                         ForEach(Array(items.enumerated()), id: \.element.id) { idx, msg in
                             let isMine = msg.senderId == myId
@@ -283,7 +293,9 @@ struct ChatView: View {
                 .animation(.easeInOut(duration: 0.15), value: atBottom)
                 .onAppear { scrollProxy = proxy }
                 .onChange(of: peerIsTyping) { _, typing in if typing { scrollToBottom() } }
-                .onChange(of: visibleMessages.count) { _, _ in if atBottom { scrollToBottom() } }
+                .onChange(of: visibleMessages.count) { _, _ in
+                    if atBottom { scrollToBottom(animated: false) }
+                }
             }
         }
     }
@@ -352,9 +364,12 @@ struct ChatView: View {
         String(a.prefix(10)) == String(b.prefix(10))
     }
 
-    private func scrollToBottom() {
-        // Target the bottom sentinel so `atBottom` flips true and the scroll-down arrow hides.
-        withAnimation { scrollProxy?.scrollTo("bottom-sentinel", anchor: .bottom) }
+    private func scrollToBottom(animated: Bool = true) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) { scrollProxy?.scrollTo("bottom-sentinel", anchor: .bottom) }
+        } else {
+            scrollProxy?.scrollTo("bottom-sentinel", anchor: .bottom)
+        }
     }
 
     private func upsert(_ msg: Message) {
@@ -422,8 +437,24 @@ struct ChatView: View {
     }
 
     private func load() async {
-        messages = ((try? await APIClient.shared.messages(conversationId: conversation.id)) ?? []).reversed()
+        let batch = (try? await APIClient.shared.messages(conversationId: conversation.id)) ?? []
+        messages = batch.reversed()
+        hasMore = batch.count >= 50
         markRead()
+    }
+
+    private func loadMore() async {
+        guard hasMore, !isLoadingMore, initialLoadDone else { return }
+        isLoadingMore = true
+        let anchorId = messages.first?.id
+        let before = messages.first?.createdAt
+        let batch = (try? await APIClient.shared.messages(conversationId: conversation.id, before: before)) ?? []
+        messages.insert(contentsOf: batch.reversed(), at: 0)
+        hasMore = batch.count >= 50
+        isLoadingMore = false
+        if let anchorId {
+            DispatchQueue.main.async { scrollProxy?.scrollTo(anchorId, anchor: .top) }
+        }
     }
 
     private func send() async {
@@ -515,6 +546,9 @@ struct ChatView: View {
     }
 
     private func startCall(kind: String) async {
+        guard !isStartingCall else { return }
+        isStartingCall = true
+        defer { isStartingCall = false }
         guard let s = try? await APIClient.shared.startCall(conversationId: conversation.id, kind: kind)
         else { return }
         CallKitManager.shared.startOutgoing(s, peerName: title, peerId: conversation.members.first?.id)

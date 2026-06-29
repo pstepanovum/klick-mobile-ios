@@ -3,8 +3,8 @@ import SwiftUI
 struct CallView: View {
     let call: CallKitManager.ActiveCall
 
-    @StateObject private var service = CallService.shared
-    @StateObject private var callKit = CallKitManager.shared
+    @ObservedObject private var service = CallService.shared
+    @ObservedObject private var callKit = CallKitManager.shared
 
     /// When true the local camera is the full-screen feed and the remote becomes the small card
     /// (tap the card or its expand button to swap, WhatsApp-style).

@@ -148,8 +148,12 @@ final class CallService: NSObject, ObservableObject {
     func toggleSpeaker() { setSpeaker(!speakerOn) }
 
     func setSpeaker(_ on: Bool) {
+        // isSpeakerOutputPreferred is the single source of truth — LiveKit applies it via
+        // overrideOutputAudioPort internally whenever it configures or reconfigures the session
+        // (including after a reconnect). Calling overrideOutputAudioPort ourselves as well would
+        // double-set the route and get silently reset the next time LiveKit reconfigures, leaving
+        // speakerOn out of sync with the actual routing.
         AudioManager.shared.isSpeakerOutputPreferred = on
-        try? AVAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
         speakerOn = on
         APIClient.mobileDiagnostic(event: "livekit.audio.speaker", callId: currentCallId, detail: on ? "on" : "off")
     }
@@ -192,7 +196,11 @@ final class CallService: NSObject, ObservableObject {
     /// CallKit has activated the audio session. Called from `join()` (after connect) and from
     /// `activateAudioSession()` (on didActivate) — whichever readies last actually publishes.
     private func publishMicIfReady(callId: String) async {
-        guard currentCallId == callId, isConnected, audioSessionActive, !micPublished else { return }
+        // isLeaving guard: leave() sets isLeaving before awaiting room.disconnect(), so the main
+        // actor is free to run other tasks (like a CallKit didActivate) during that suspension.
+        // Without this check, publishMicIfReady could run on a tearing-down room and either throw
+        // or succeed — leaving a mic track published on a room that's about to be discarded.
+        guard currentCallId == callId, isConnected, audioSessionActive, !micPublished, !isLeaving else { return }
         micPublished = true
         do {
             APIClient.mobileDiagnostic(event: "livekit.join.mic.start", callId: callId)
@@ -234,7 +242,11 @@ final class CallService: NSObject, ObservableObject {
     }
 
     private func prepareRoom(callId: String) {
-        if currentCallId != callId || room.connectionState != .disconnected {
+        // Only recreate the room when switching to a different call.
+        // If the room is already connecting/connected for this same callId,
+        // leave it alone — recreating it would orphan the live session and
+        // briefly produce two concurrent LiveKit rooms (the duplicate-video bug).
+        if currentCallId != callId {
             room.remove(delegate: self)
             room = Room()
             room.add(delegate: self)

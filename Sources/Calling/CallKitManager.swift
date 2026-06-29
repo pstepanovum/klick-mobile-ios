@@ -514,6 +514,10 @@ extension CallKitManager: CXProviderDelegate {
             Ringback.shared.stop()
             let id = activeCall?.id ?? callId(for: action.uuid)
             APIClient.mobileDiagnostic(event: "callkit.end.enter", callId: id, detail: action.uuid.uuidString)
+            // Fulfill immediately — CallKit enforces a short deadline on this action and will
+            // call providerDidReset (killing all calls) if we don't respond fast enough. The
+            // actual async teardown (server notify, LiveKit disconnect) happens after.
+            action.fulfill()
             if let id {
                 recentlyEndedCallIds.insert(id)
                 if activeCall == nil, pendingInvites[id] != nil {
@@ -533,7 +537,6 @@ extension CallKitManager: CXProviderDelegate {
             await CallService.shared.leave()
             CallActivityController.end()
             activeCall = nil
-            action.fulfill()
         }
     }
 

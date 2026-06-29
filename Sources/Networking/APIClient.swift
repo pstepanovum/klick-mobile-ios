@@ -74,8 +74,12 @@ actor APIClient {
 
     func conversations() async throws -> [Conversation] { try await get("/conversations") }
 
-    func messages(conversationId: String) async throws -> [Message] {
-        try await get("/conversations/\(conversationId)/messages")
+    func messages(conversationId: String, before: String? = nil, limit: Int = 50) async throws -> [Message] {
+        var path = "/conversations/\(conversationId)/messages?limit=\(limit)"
+        if let before, let encoded = before.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "&before=\(encoded)"
+        }
+        return try await get(path)
     }
 
     func send(conversationId: String, body: String, replyToId: String? = nil) async throws -> Message {

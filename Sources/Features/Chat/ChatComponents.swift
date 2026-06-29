@@ -95,7 +95,13 @@ struct MessageBubble: View {
                     if let reply = message.replyTo {
                         ReplyQuoteView(reply: reply, authorName: replyAuthorName)
                     }
-                    MessageAttachmentsView(attachments: message.attachments, isMine: isMine)
+                    MessageAttachmentsView(
+                        attachments: message.attachments,
+                        isMine: isMine,
+                        showTime: isLast && message.body.isEmpty,
+                        time: shortTime(message.createdAt),
+                        status: message.status
+                    )
                 }
 
                 if !message.body.isEmpty {
@@ -103,9 +109,14 @@ struct MessageBubble: View {
                         if let reply = message.replyTo, message.attachments.isEmpty {
                             ReplyQuoteView(reply: reply, authorName: replyAuthorName, onPrimary: isMine)
                         }
-                        Text(message.body)
-                            .font(KlicFont.body())
-                            .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
+                        HStack(alignment: .bottom, spacing: 6) {
+                            Text(message.body)
+                                .font(KlicFont.body())
+                                .foregroundStyle(isMine ? KlicColor.onPrimary : KlicColor.textPrimary)
+                            if isLast {
+                                inlineTimeStatus(onPrimary: isMine)
+                            }
+                        }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -123,28 +134,24 @@ struct MessageBubble: View {
                 if !message.reactions.isEmpty {
                     ReactionPills(reactions: message.reactions, onTap: onReactionTap)
                 }
-
-                if isLast {
-                    // Time + delivery ticks live in a small pill below the bubble so they never
-                    // overlap the message text.
-                    HStack(spacing: 4) {
-                        Text(shortTime(message.createdAt))
-                            .font(KlicFont.caption(11))
-                            .foregroundStyle(KlicColor.textMuted)
-                        if isMine, let status = message.status {
-                            MessageTicks(status: status)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(KlicColor.textPrimary.opacity(0.06), in: Capsule())
-                }
             }
             .onLongPressGesture(minimumDuration: 0.3, perform: onLongPress)
 
             if !isMine { Spacer(minLength: 56) }
         }
         .padding(.vertical, 1)
+    }
+
+    @ViewBuilder
+    private func inlineTimeStatus(onPrimary: Bool) -> some View {
+        HStack(spacing: 3) {
+            Text(shortTime(message.createdAt))
+                .font(KlicFont.caption(11))
+                .foregroundStyle(onPrimary ? KlicColor.onPrimary.opacity(0.65) : KlicColor.textMuted)
+            if isMine, let status = message.status {
+                MessageTicks(status: status, onPrimary: onPrimary)
+            }
+        }
     }
 
     private func shortTime(_ iso: String) -> String {
@@ -159,48 +166,20 @@ struct MessageBubble: View {
     }
 }
 
-// MARK: - Delivery ticks
-
-private struct MessageTicks: View {
-    let status: String   // "sent" | "delivered" | "read"
-
-    var body: some View {
-        let isRead = status == "read"
-        let single = status == "sent"
-        // One main checkmark; "delivered"/"read" add a second offset behind it so it reads as a
-        // double-tick with just a diagonal accent. Gray until read, then green.
-        ZStack(alignment: .trailing) {
-            if !single {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .offset(x: -4)
-            }
-            Image(systemName: "checkmark")
-                .font(.system(size: 8, weight: .bold))
-        }
-        .foregroundStyle(isRead ? KlicColor.read : KlicColor.textMuted)
-    }
-}
-
 // MARK: - Date separator
 
 struct DateSeparator: View {
     let dateString: String
 
     var body: some View {
-        HStack {
-            line
-            Text(label)
-                .font(KlicFont.caption(12))
-                .foregroundStyle(KlicColor.textMuted)
-                .padding(.horizontal, 8)
-            line
-        }
-        .padding(.vertical, 12)
-    }
-
-    private var line: some View {
-        Rectangle().fill(KlicColor.surfaceRaised).frame(height: 1)
+        Text(label)
+            .font(KlicFont.caption(12))
+            .foregroundStyle(KlicColor.textMuted)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(KlicColor.surfaceRaised, in: Capsule())
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
     }
 
     private var label: String {
