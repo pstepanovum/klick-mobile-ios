@@ -58,6 +58,8 @@ private struct ConversationRow: View {
         return socket.presence[id]?.online == true
     }
 
+    private var unread: Int { conversation.unreadCount ?? 0 }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
@@ -75,6 +77,20 @@ private struct ConversationRow: View {
                         .lineLimit(2)
                 }
                 Spacer()
+                // Time (top) + unread count badge (bottom), right-aligned.
+                VStack(alignment: .trailing, spacing: 6) {
+                    if let time = lastMessageTime(conversation.lastMessage) {
+                        Text(time).font(KlicFont.caption(12)).foregroundStyle(KlicColor.textMuted)
+                    }
+                    if unread > 0 {
+                        Text(unread > 99 ? "99+" : "\(unread)")
+                            .font(KlicFont.caption(12).weight(.semibold))
+                            .foregroundStyle(KlicColor.onPrimary)
+                            .padding(.horizontal, 6)
+                            .frame(minWidth: 20, minHeight: 20)
+                            .background(KlicColor.primary, in: Capsule())
+                    }
+                }
             }
             .padding(.vertical, 12)
             // Divider inset to start under the text content, not under the avatar.
@@ -84,6 +100,16 @@ private struct ConversationRow: View {
                 .padding(.leading, 66)
         }
     }
+}
+
+/// Short clock time for the last message (e.g. "3:26 PM"), or nil if unknown.
+private func lastMessageTime(_ m: Message?) -> String? {
+    guard let iso = m?.createdAt, !iso.isEmpty else { return nil }
+    let df = ISO8601DateFormatter(); df.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let df2 = ISO8601DateFormatter(); df2.formatOptions = [.withInternetDateTime]
+    guard let date = df.date(from: iso) ?? df2.date(from: iso) else { return nil }
+    let f = DateFormatter(); f.dateFormat = "h:mm a"
+    return f.string(from: date)
 }
 
 /// One-line summary of the last message for the chat list (no emoji, per the design system).

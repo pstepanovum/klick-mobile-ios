@@ -46,17 +46,22 @@ struct ChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            messageList
-            if let target = replyingTo {
-                ReplyComposerBar(
-                    authorName: target.senderId == myId ? "yourself" : title,
-                    preview: previewText(for: target),
-                    onCancel: { withAnimation { replyingTo = nil } }
-                )
+        messageList
+            // The composer floats over the chat as a bottom inset: transparent background so
+            // messages scroll behind it, and the inset reserves space so the newest message
+            // is never hidden/clipped behind it (incl. when the keyboard opens).
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    if let target = replyingTo {
+                        ReplyComposerBar(
+                            authorName: target.senderId == myId ? "yourself" : title,
+                            preview: previewText(for: target),
+                            onCancel: { withAnimation { replyingTo = nil } }
+                        )
+                    }
+                    composer
+                }
             }
-            composer
-        }
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(KlicColor.background.ignoresSafeArea())
@@ -238,6 +243,7 @@ struct ChatView: View {
                 .padding(.bottom, 8)
             }
             .defaultScrollAnchor(.bottom)
+            .scrollIndicators(.hidden)
             // Scrolling must NOT dismiss the keyboard; a single tap on the chat does.
             .scrollDismissesKeyboard(.never)
             .simultaneousGesture(TapGesture().onEnded { isComposerFocused = false })
@@ -328,11 +334,8 @@ struct ChatView: View {
     }
 
     private func scrollToBottom() {
-        if peerIsTyping {
-            withAnimation { scrollProxy?.scrollTo("typing-indicator", anchor: .bottom) }
-        } else if let last = visibleMessages.last {
-            withAnimation { scrollProxy?.scrollTo(last.id, anchor: .bottom) }
-        }
+        // Target the bottom sentinel so `atBottom` flips true and the scroll-down arrow hides.
+        withAnimation { scrollProxy?.scrollTo("bottom-sentinel", anchor: .bottom) }
     }
 
     private func upsert(_ msg: Message) {
