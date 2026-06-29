@@ -21,6 +21,7 @@ struct ConversationsView: View {
                     ForEach(filtered) { convo in
                         NavigationLink(value: convo) {
                             ConversationRow(conversation: convo)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -58,23 +59,45 @@ private struct ConversationRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 14) {
-            AvatarView(url: conversation.members.first?.avatarUrl, name: title, size: 52)
-                .overlay(alignment: .bottomTrailing) {
-                    if isOnline {
-                        Circle().fill(.green).frame(width: 14, height: 14)
-                            .overlay(Circle().stroke(KlicColor.surface, lineWidth: 2))
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                AvatarView(url: conversation.members.first?.avatarUrl, name: title, size: 52)
+                    .overlay(alignment: .bottomTrailing) {
+                        if isOnline {
+                            Circle().fill(.green).frame(width: 14, height: 14)
+                                .overlay(Circle().stroke(KlicColor.background, lineWidth: 2))
+                        }
                     }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(KlicFont.headline()).foregroundStyle(KlicColor.textPrimary)
+                    Text(lastMessageText(conversation.lastMessage))
+                        .font(KlicFont.body(14)).foregroundStyle(KlicColor.textMuted)
+                        .lineLimit(2)
                 }
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(KlicFont.headline()).foregroundStyle(KlicColor.textPrimary)
-                Text(conversation.lastMessage?.body ?? "Say hi")
-                    .font(KlicFont.body(14)).foregroundStyle(KlicColor.textMuted).lineLimit(1)
+                Spacer()
             }
-            Spacer()
+            .padding(.vertical, 12)
+            // Divider inset to start under the text content, not under the avatar.
+            Rectangle()
+                .fill(KlicColor.textPrimary.opacity(0.08))
+                .frame(height: 1)
+                .padding(.leading, 66)
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
-        .background(KlicColor.surface, in: RoundedRectangle(cornerRadius: 20))
+    }
+}
+
+/// One-line summary of the last message for the chat list (no emoji, per the design system).
+private func lastMessageText(_ m: Message?) -> String {
+    guard let m else { return "Say hi" }
+    if m.isDeleted { return "Message deleted" }
+    if m.isCallEvent { return m.call?.isVideo == true ? "Video call" : "Voice call" }
+    if m.isSticker { return "Sticker" }
+    if !m.body.isEmpty { return m.body }
+    switch m.attachments.first?.kind {
+    case "IMAGE": return "Photo"
+    case "VIDEO": return "Video"
+    case "VOICE": return "Voice message"
+    case .some:   return "File"
+    default:      return "Say hi"
     }
 }
