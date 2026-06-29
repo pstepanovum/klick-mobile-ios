@@ -33,6 +33,9 @@ struct CallView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
+        // Don't let the screen dim/lock while the call UI is up (matches Android's keepScreenOn).
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
     }
 
     private var avatar: some View {
