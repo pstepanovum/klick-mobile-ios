@@ -57,3 +57,17 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.klicmobile.app.widgets
         INFOPLIST_FILE: Widget/Info.plist
+
+# Explicit shared scheme so `xcodegen generate` always emits it. Without this, a malformed-project
+# warning (the Sources/Shared vs on-disk Sources/shared case collision) intermittently left the
+# regenerated project with NO scheme, so `xcodebuild -scheme Klic` (release.sh archive) failed with
+# "does not contain a scheme named Klic". Defining it here makes scheme generation deterministic.
+schemes:
+  Klic:
+    build:
+      targets:
+        Klic: all
+    run:
+      config: Debug
+    archive:
+      config: Release
