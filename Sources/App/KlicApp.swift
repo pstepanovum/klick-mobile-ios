@@ -28,8 +28,6 @@ struct KlicApp: App {
                         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
                         if CallKitManager.shared.activeCall == nil {
                             CallActivityController.end()
-                        } else {
-                            CallKitManager.shared.enableCameraFromSystemVideoButtonIfNeeded()
                         }
                     }
                 }

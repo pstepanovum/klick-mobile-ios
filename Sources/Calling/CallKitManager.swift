@@ -384,19 +384,6 @@ final class CallKitManager: NSObject, ObservableObject {
         finishCall(callId: callId, status: "Ended", notifyServer: true, dismissAfter: 500_000_000)
     }
 
-    func enableCameraFromSystemVideoButtonIfNeeded() {
-        guard let call = activeCall,
-              statusText == "Connected",
-              CallService.shared.isConnected,
-              !call.isVideo,
-              !CallService.shared.cameraEnabled
-        else { return }
-        APIClient.mobileDiagnostic(event: "callkit.systemVideo.enableCamera", callId: call.id)
-        Task {
-            await CallService.shared.setCamera(enabled: true)
-            CallActivityController.update(status: statusText, muted: !CallService.shared.micEnabled, isVideo: true)
-        }
-    }
 }
 
 extension CallKitManager: CXProviderDelegate {
@@ -496,6 +483,12 @@ extension CallKitManager: CXProviderDelegate {
         Task { @MainActor in
             guard let call = activeCall else { action.fail(); return }
             action.fulfill()
+            // Tell CallKit the outgoing call is connecting. Reporting the outgoing-call lifecycle is
+            // what makes the system reliably activate the call's audio session (→ provider
+            // didActivate → publishMicIfReady publishes the mic). Without it, didActivate can be
+            // skipped or arrive late on an outgoing call, leaving the mic unpublished while playout
+            // still works — the "I hear them but they can't hear me" one-way-audio bug.
+            provider.reportOutgoingCall(with: action.uuid, startedConnectingAt: Date())
             do {
                 APIClient.mobileDiagnostic(event: "callkit.start.fulfill", callId: call.id)
                 try await CallService.shared.join(
@@ -510,6 +503,11 @@ extension CallKitManager: CXProviderDelegate {
                 finishCall(callId: call.id, status: "Call failed", notifyServer: false, dismissAfter: 500_000_000)
                 return
             }
+            // Our media is up. Report the call connected so CallKit activates the audio session now
+            // (firing provider(didActivate:), which publishes the mic) rather than leaving it to an
+            // unreliable implicit activation. The in-app status stays "Calling…" until the callee
+            // actually answers (handlePeerAccepted), so the on-screen UI is unaffected.
+            provider.reportOutgoingCall(with: action.uuid, connectedAt: Date())
             // We're connected to the room but still waiting for the callee to answer — play the
             // outgoing ringback until they do (handlePeerAccepted stops it).
             if statusText == "Calling..." { Ringback.shared.start() }
