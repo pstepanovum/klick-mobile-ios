@@ -34,6 +34,9 @@ final class CallService: NSObject, ObservableObject {
     /// both call `publishMicIfReady`, whichever is ready last.
     private var micPublished = false
 
+    /// Safety net for the mic publish (see `scheduleMicPublishFallback`). Canceled on `leave()`.
+    private var micPublishFallbackTask: Task<Void, Never>?
+
     /// Last audio route we applied based on whether any video is on screen. Drives automatic
     /// speaker (video) ↔ earpiece (audio-only) switching as cameras turn on/off mid-call.
     private var videoRouteActive = false
@@ -95,6 +98,9 @@ final class CallService: NSObject, ObservableObject {
             // CallKit's didActivate. If CallKit already activated, publish now; otherwise
             // activateAudioSession() does it the moment didActivate fires.
             await publishMicIfReady(callId: callId)
+            // …and if that callback is never delivered (seen on locked-screen / cold-launch
+            // answers), publish the mic ourselves shortly after — see scheduleMicPublishFallback.
+            scheduleMicPublishFallback(callId: callId)
         } catch {
             print("CallService.join failed: \(error)")
             APIClient.mobileDiagnostic(event: "livekit.join.failed", callId: callId, detail: String(describing: error))
@@ -224,9 +230,33 @@ final class CallService: NSObject, ObservableObject {
         }
     }
 
+    /// Safety net for the mic publish. The mic is normally published the instant CallKit reports the
+    /// audio session active (`provider(didActivate:)` → `activateAudioSession`). On some answers —
+    /// notably a locked-screen or cold-launch (VoIP-push) answer — that callback isn't delivered, so
+    /// the mic is never published and the peer can't hear us (one-way audio); and because the audio
+    /// session never goes active, the `audio` background mode can't keep us alive, so the app gets
+    /// suspended when the screen locks and the call-teardown signals (socket `call:end`, LiveKit
+    /// participant-disconnect) never arrive — leaving CallKit stuck "in a call". By the time this
+    /// fires CallKit has activated the session (it does so right after the call is answered), so it's
+    /// safe to mark it active and publish. No-ops if the mic is already published; canceled on leave.
+    private func scheduleMicPublishFallback(callId: String) {
+        micPublishFallbackTask?.cancel()
+        micPublishFallbackTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard let self, !Task.isCancelled,
+                  self.currentCallId == callId, self.isConnected,
+                  !self.micPublished, !self.isLeaving else { return }
+            APIClient.mobileDiagnostic(event: "livekit.audio.micPublishFallback", callId: callId)
+            self.audioSessionActive = true
+            await self.publishMicIfReady(callId: callId)
+        }
+    }
+
     func leave() async {
         let callId = currentCallId
         isLeaving = true
+        micPublishFallbackTask?.cancel()
+        micPublishFallbackTask = nil
         APIClient.mobileDiagnostic(event: "livekit.leave.start", callId: callId)
         await room.disconnect()
         isConnected = false
