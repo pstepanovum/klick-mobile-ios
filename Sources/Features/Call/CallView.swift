@@ -88,7 +88,7 @@ struct CallView: View {
     private var avatar: some View {
         VStack(spacing: 14) {
             AvatarView(
-                url: call.peerId.map { APIClient.avatarURL(forUserId: $0) },
+                url: call.peerAvatarUrl ?? call.peerId.map { APIClient.avatarURL(forUserId: $0) },
                 name: call.peerName,
                 size: 120
             )

@@ -203,7 +203,12 @@ struct FriendRequest: Codable, Identifiable {
     let from: From
     var id: String { requestId }
 
-    struct From: Codable { let id: String; let username: String; let displayName: String }
+    struct From: Codable {
+        let id: String
+        let username: String
+        let displayName: String
+        var avatarUrl: String?
+    }
 }
 
 struct CallSession: Codable, Identifiable {

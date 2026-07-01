@@ -69,7 +69,7 @@ struct FriendsView: View {
             ForEach(requests) { req in
                 VStack(spacing: 0) {
                     HStack(spacing: 14) {
-                        AvatarView(url: APIClient.avatarURL(forUserId: req.from.id), name: req.from.displayName, size: 52)
+                        AvatarView(url: req.from.avatarUrl ?? APIClient.avatarURL(forUserId: req.from.id), name: req.from.displayName, size: 52)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(req.from.displayName).font(KlicFont.medium()).foregroundStyle(KlicColor.textPrimary)
                             Text("@\(req.from.username)").font(KlicFont.caption()).foregroundStyle(KlicColor.textMuted)
@@ -176,7 +176,7 @@ struct FriendsView: View {
         guard let convo = try? await APIClient.shared.openConversation(userId: friend.id),
               let session = try? await APIClient.shared.startCall(conversationId: convo.id, kind: kind)
         else { return }
-        CallKitManager.shared.startOutgoing(session, peerName: friend.displayName, peerId: friend.id)
+        CallKitManager.shared.startOutgoing(session, peerName: friend.displayName, peerId: friend.id, peerAvatarUrl: friend.avatarUrl)
     }
 }
 

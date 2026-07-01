@@ -129,7 +129,12 @@ private struct RecentCallRow: View {
         defer { isCalling = false }
         guard let session = try? await APIClient.shared.startCall(conversationId: call.conversationId, kind: call.kind)
         else { return }
-        CallKitManager.shared.startOutgoing(session, peerName: call.peer?.displayName ?? "Call", peerId: call.peer?.id)
+        CallKitManager.shared.startOutgoing(
+            session,
+            peerName: call.peer?.displayName ?? "Call",
+            peerId: call.peer?.id,
+            peerAvatarUrl: call.peer?.avatarUrl
+        )
     }
 
     static func relativeTime(_ iso: String) -> String {
@@ -186,7 +191,12 @@ private struct FriendCallRow: View {
         guard let convo = try? await APIClient.shared.openConversation(userId: friend.id),
               let session = try? await APIClient.shared.startCall(conversationId: convo.id, kind: kind)
         else { return }
-        CallKitManager.shared.startOutgoing(session, peerName: friend.displayName)
+        CallKitManager.shared.startOutgoing(
+            session,
+            peerName: friend.displayName,
+            peerId: friend.id,
+            peerAvatarUrl: friend.avatarUrl
+        )
     }
 }
 

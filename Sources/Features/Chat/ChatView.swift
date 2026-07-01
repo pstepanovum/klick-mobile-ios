@@ -225,6 +225,11 @@ struct ChatView: View {
                         }
                     }
                 }
+                .padding(.leading, 4)
+                .padding(.trailing, 12)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial, in: Capsule())
+                .background(KlicColor.surface, in: Capsule())
             }
             .buttonStyle(.plain)
         } else {
@@ -258,6 +263,11 @@ struct ChatView: View {
                         }
                     }
                 }
+                .padding(.leading, 4)
+                .padding(.trailing, 12)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial, in: Capsule())
+                .background(KlicColor.surface, in: Capsule())
             }
             .buttonStyle(.plain)
         }
@@ -640,7 +650,12 @@ struct ChatView: View {
         defer { isStartingCall = false }
         guard let s = try? await APIClient.shared.startCall(conversationId: conversation.id, kind: kind)
         else { return }
-        CallKitManager.shared.startOutgoing(s, peerName: title, peerId: conversation.members.first?.id)
+        CallKitManager.shared.startOutgoing(
+            s,
+            peerName: title,
+            peerId: conversation.members.first?.id,
+            peerAvatarUrl: conversation.members.first?.avatarUrl
+        )
     }
 
     private func senderDisplayName(for userId: String) -> String {
@@ -682,7 +697,12 @@ struct ChatView: View {
         guard let directConversation = try? await APIClient.shared.openConversation(userId: member.id),
               let session = try? await APIClient.shared.startCall(conversationId: directConversation.id, kind: kind)
         else { return }
-        CallKitManager.shared.startOutgoing(session, peerName: member.displayName, peerId: member.id)
+        CallKitManager.shared.startOutgoing(
+            session,
+            peerName: member.displayName,
+            peerId: member.id,
+            peerAvatarUrl: member.avatarUrl
+        )
     }
 
     private func sendInvite(to member: ChatProfileTarget) async {
