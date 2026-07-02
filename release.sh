@@ -12,8 +12,9 @@
 set -euo pipefail
 # Without this, a build failing inside $(build_android ...) does NOT abort the
 # script — bash drops errexit in command substitutions — and a stale artifact
-# gets released. This bit us once; do not remove.
-shopt -s inherit_errexit
+# gets released. This bit us once. macOS bash 3.2 lacks the option (hence the
+# guard), so the [ -f ... ] checks after each build are the real safety net.
+shopt -s inherit_errexit 2>/dev/null || true
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SELF_DIR="$SCRIPT_DIR"
@@ -113,7 +114,7 @@ build_android() {
     cd "$dir"
     # stdout of this function is the artifact path — keep build logs on stderr
     ./gradlew assembleDebug 1>&2
-  )
+  ) || { echo "ERROR: gradle build failed" >&2; exit 1; }
   local apk="$dir/klic-${version}.apk"
   cp "$dir/app/build/outputs/apk/debug/app-debug.apk" "$apk"
   echo "$apk"
@@ -148,7 +149,7 @@ build_ios() {
       CODE_SIGNING_ALLOWED=NO \
       DEVELOPMENT_TEAM="" \
       -quiet 1>&2
-  )
+  ) || { echo "ERROR: xcodebuild archive failed" >&2; exit 1; }
 
   rm -rf "$payload_dir"
   mkdir -p "$payload_dir/Payload"
@@ -266,15 +267,31 @@ fi
 android_apk=""
 ios_ipa=""
 
+# A build function's stdout must be exactly one line: the artifact path. Verify the
+# file really exists before releasing anything — on bash < 4.4 a build failure inside
+# $(...) does not abort the script, and a stale artifact must never ship again.
+require_artifact() {
+  local path="$1"
+  local label="$2"
+  if [ ! -f "$path" ]; then
+    echo "ERROR: $label build did not produce an artifact (got: ${path:0:120})" >&2
+    exit 1
+  fi
+}
+
 if [ "$SELF_PLATFORM" = "android" ]; then
   android_apk="$(build_android "$ANDROID_DIR" "$new_version")"
+  require_artifact "$android_apk" "Android"
   if [ "$publish_sibling" = true ] && require_dir "$IOS_DIR"; then
     ios_ipa="$(build_ios "$IOS_DIR" "$new_version")"
+    require_artifact "$ios_ipa" "iOS"
   fi
 else
   ios_ipa="$(build_ios "$IOS_DIR" "$new_version")"
+  require_artifact "$ios_ipa" "iOS"
   if [ "$publish_sibling" = true ] && require_dir "$ANDROID_DIR"; then
     android_apk="$(build_android "$ANDROID_DIR" "$new_version")"
+    require_artifact "$android_apk" "Android"
   fi
 fi
 
