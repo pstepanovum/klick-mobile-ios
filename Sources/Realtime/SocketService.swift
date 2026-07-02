@@ -61,10 +61,13 @@ final class SocketService: ObservableObject {
                   let dict = data.first as? [String: Any],
                   let json = try? JSONSerialization.data(withJSONObject: dict),
                   let msg = try? JSONDecoder().decode(Message.self, from: json) else { return }
-            self.lastMessage = msg
-            // Acknowledge delivery for messages from others (drives the second tick).
-            if msg.senderId != self.myUserId {
-                self.emit("message:delivered", ["conversationId": msg.conversationId])
+            // Decrypt-or-passthrough off the socket thread, then publish.
+            Task { @MainActor in
+                self.lastMessage = await E2eeMessaging.shared.materialize(msg)
+                // Acknowledge delivery for messages from others (drives the second tick).
+                if msg.senderId != self.myUserId {
+                    self.emit("message:delivered", ["conversationId": msg.conversationId])
+                }
             }
         }
         socket.on("presence:update") { [weak self] data, _ in
