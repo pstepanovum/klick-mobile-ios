@@ -111,9 +111,20 @@ actor APIClient {
 
     // MARK: Conversations / messaging
 
-    func conversations() async throws -> [Conversation] { try await get("/conversations") }
+    func conversations() async throws -> [Conversation] {
+        var list: [Conversation] = try await get("/conversations")
+        for i in list.indices where list[i].lastMessage?.kind == "CIPHERTEXT" {
+            list[i].lastMessage = await E2eeMessaging.shared.materialize(list[i].lastMessage!)
+        }
+        return list
+    }
 
     func messages(conversationId: String, before: String? = nil, limit: Int = 50) async throws -> [Message] {
+        let raw: [Message] = try await rawMessages(conversationId: conversationId, before: before, limit: limit)
+        return await E2eeMessaging.shared.materializeAll(raw)
+    }
+
+    private func rawMessages(conversationId: String, before: String? = nil, limit: Int = 50) async throws -> [Message] {
         var path = "/conversations/\(conversationId)/messages?limit=\(limit)"
         if let before, let encoded = before.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
             path += "&before=\(encoded)"
@@ -122,6 +133,15 @@ actor APIClient {
     }
 
     func send(conversationId: String, body: String, replyToId: String? = nil) async throws -> Message {
+        if E2eeConfig.sendEnabled {
+            // Reply quotes travel inside the ciphertext at the cutover; the
+            // plaintext replyToId is dropped then. Dormant until the flag flips.
+            return try await E2eeMessaging.shared.sendText(conversationId: conversationId, text: body)
+        }
+        return try await sendLegacy(conversationId: conversationId, body: body, replyToId: replyToId)
+    }
+
+    private func sendLegacy(conversationId: String, body: String, replyToId: String? = nil) async throws -> Message {
         var payload: [String: Any] = ["body": body]
         if let replyToId { payload["replyToId"] = replyToId }
         return try await post("/conversations/\(conversationId)/messages", body: payload)
@@ -292,6 +312,18 @@ actor APIClient {
 
     func rotateSignedPreKey(_ body: RotateSignedPreKeyRequest) async throws -> EmptyResponse {
         try await put("/keys/signed-prekey", encodable: body)
+    }
+
+    func userKeys(userId: String) async throws -> UserKeysResponse {
+        try await get("/users/\(userId)/keys")
+    }
+
+    func conversationDevices(conversationId: String) async throws -> DeviceDirectoryResponse {
+        try await get("/conversations/\(conversationId)/devices")
+    }
+
+    func sendCiphertext(conversationId: String, body: CipherSendRequest) async throws -> Message {
+        try await post("/conversations/\(conversationId)/messages", encodable: body)
     }
 
     // MARK: - Core

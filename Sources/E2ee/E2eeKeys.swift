@@ -49,201 +49,311 @@ struct RotateSignedPreKeyRequest: Codable {
     let signedPreKey: SignedPreKeyDto
 }
 
+// ── Bundle fetch + device directory + ciphertext send (E2EE.md §6.2–6.3) ─────
+
+struct DeviceBundleDto: Codable {
+    let deviceId: UInt32
+    let registrationId: UInt32
+    let identityKey: String
+    let signedPreKey: SignedPreKeyDto
+    let preKey: OneTimePreKeyDto?
+    let kyberPreKey: KyberPreKeyDto?
+}
+
+struct UserKeysResponse: Codable {
+    let userId: String
+    let devices: [DeviceBundleDto]
+}
+
+struct DeviceDirEntry: Codable {
+    let userId: String
+    let deviceId: UInt32
+    let registrationId: UInt32
+    let identityKey: String
+}
+
+struct DeviceDirectoryResponse: Codable { let devices: [DeviceDirEntry] }
+
+struct CipherEnvelopeDto: Codable {
+    let userId: String
+    let deviceId: UInt32
+    let type: Int
+    let ciphertext: String
+}
+
+struct CipherSendRequest: Codable {
+    var kind: String = "CIPHERTEXT"
+    let senderDeviceId: Int
+    let envelopes: [CipherEnvelopeDto]
+}
+
 // ── Local key state (sealed to disk by E2eeVault) ─────────────────────────────
 
+/// Schema v2: all protocol records (prekeys, signed prekeys, Kyber keys,
+/// sessions, peer identities) live in the store snapshot, and the Kyber
+/// last-resort key uses the reserved id. v1 state fails Codable decoding
+/// (no `store` key) and is regenerated — intended: v1 published a last-resort
+/// key whose id collided with one-time kyber id 1, and no sessions exist yet.
 private struct E2eeState: Codable {
+    var schemaV: Int
     var installId: String
     var deviceId: Int?
     var registrationId: Int
     var identity: Data // serialized IdentityKeyPair
-    var signedPreKeys: [UInt32: Data] // id → serialized record; superseded ones kept
     var currentSignedPreKeyId: UInt32
     var signedPreKeyCreatedAt: UInt64 // epoch ms
-    var kyberLastResort: Data
-    var preKeys: [UInt32: Data]
-    var kyberPreKeys: [UInt32: Data]
     var nextPreKeyId: UInt32
     var nextKyberId: UInt32
     var nextSignedId: UInt32
+    var store: E2eeStoreSnapshot
+}
+
+/// Reference box so the store's synchronous write-through callback can update
+/// the persisted state from inside libsignal operations (the actor's serial
+/// execution makes this safe).
+private final class E2eeStateBox {
+    var state: E2eeState
+    init(_ state: E2eeState) { self.state = state }
+
+    func save() { try? E2eeVault.save(state) }
 }
 
 /**
- This install's Signal-protocol identity: identity keypair, signed prekey, and one-time
- EC + Kyber prekeys — the iOS mirror of Android's `E2eeKeyManager`.
-
- Phase 1 scope: generate, publish, top up, rotate. Sessions (encrypt/decrypt) are Phase 2 —
- private prekey records are retained so Phase 2 can process incoming PreKey messages
- that reference them.
+ This install's Signal-protocol identity and key material — the iOS mirror of
+ Android's `E2eeKeyManager` (schema v2). The actor serializes every protocol
+ operation; libsignal session state is read-modify-write.
  */
 actor E2eeKeyManager {
     static let shared = E2eeKeyManager()
 
+    private static let schema = 2
     private static let preKeyBatch: UInt32 = 100
     private static let kyberBatch: UInt32 = 50
     private static let topUpThreshold = 20
     private static let signedPreKeyMaxAgeMs: UInt64 = 7 * 24 * 60 * 60 * 1000
 
-    /// Bring this install's published bundle up to date. Called on every successful
-    /// auth; safe to call repeatedly. Failures are logged and retried on the next auth.
+    private var box: E2eeStateBox?
+    private var cachedStore: KlicSignalStore?
+
+    /// The protocol deviceId assigned by the server, or nil before first publish.
+    func localDeviceId() -> Int? { loadBox()?.state.deviceId }
+
+    /// The libsignal store for session operations (actor-isolated). Nil until
+    /// keys have been generated, published, and assigned a deviceId.
+    func protocolStore() -> KlicSignalStore? {
+        guard let box = loadBox(), box.state.deviceId != nil else { return nil }
+        return store(for: box)
+    }
+
+    /// Bring this install's published bundle up to date. Called on every
+    /// successful auth; safe to call repeatedly.
     func ensureReady() async {
         do {
-            guard var state = E2eeVault.load(E2eeState.self) else {
+            guard let box = loadBox(), box.state.schemaV == Self.schema else {
+                if box != nil { E2eeVault.destroy(); self.box = nil; cachedStore = nil }
                 try await generateAndPublish()
                 return
             }
-            if state.deviceId == nil {
-                try await publish(&state) // an earlier publish never landed
+            if box.state.deviceId == nil {
+                try await publish(box) // an earlier publish never landed
             } else {
-                try await maintain(&state)
+                try await maintain(box)
             }
         } catch {
             print("E2ee key upkeep failed (will retry on next auth): \(error)")
         }
     }
 
-    // ── Generation + publish ──────────────────────────────────────────────────
+    // MARK: - State plumbing
+
+    private func loadBox() -> E2eeStateBox? {
+        if let box { return box }
+        guard let state = E2eeVault.load(E2eeState.self) else { return nil }
+        let box = E2eeStateBox(state)
+        self.box = box
+        return box
+    }
+
+    private func store(for box: E2eeStateBox) -> KlicSignalStore? {
+        if let cachedStore { return cachedStore }
+        guard let identity = try? IdentityKeyPair(bytes: box.state.identity) else { return nil }
+        let store = KlicSignalStore(
+            identity: identity,
+            registrationId: UInt32(box.state.registrationId),
+            snapshot: box.state.store
+        ) { [box] snapshot in
+            box.state.store = snapshot
+            box.save()
+        }
+        cachedStore = store
+        return store
+    }
+
+    // MARK: - Generation + publish
 
     private func generateAndPublish() async throws {
         let identity = IdentityKeyPair.generate()
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
 
-        let signedPriv = PrivateKey.generate()
-        let signedRecord = try SignedPreKeyRecord(
-            id: 1, timestamp: now, privateKey: signedPriv,
-            signature: identity.privateKey.generateSignature(message: signedPriv.publicKey.serialize()))
-
-        let kyberPair = KEMKeyPair.generate()
-        let kyberLastResort = try KyberPreKeyRecord(
-            id: 1, timestamp: now, keyPair: kyberPair,
-            signature: identity.privateKey.generateSignature(message: kyberPair.publicKey.serialize()))
-
+        let signedRecord = try Self.makeSignedPreKey(identity: identity, id: 1, now: now)
+        let kyberLastResort = try Self.makeKyberPreKey(identity: identity, id: E2eeIds.kyberLastResort, now: now)
         let preKeys = try (1...Self.preKeyBatch).map {
             try PreKeyRecord(id: $0, privateKey: PrivateKey.generate())
         }
-        let kyberPreKeys = try (1...Self.kyberBatch).map { id -> KyberPreKeyRecord in
-            let pair = KEMKeyPair.generate()
-            return try KyberPreKeyRecord(
-                id: id, timestamp: now, keyPair: pair,
-                signature: identity.privateKey.generateSignature(message: pair.publicKey.serialize()))
+        let kyberPreKeys = try (1...Self.kyberBatch).map {
+            try Self.makeKyberPreKey(identity: identity, id: $0, now: now)
+        }
+
+        var snapshot = E2eeStoreSnapshot()
+        for record in preKeys { snapshot.preKeys[String(record.id)] = record.serialize() }
+        snapshot.signedPreKeys["1"] = signedRecord.serialize()
+        for record in kyberPreKeys + [kyberLastResort] {
+            snapshot.kyberPreKeys[String(record.id)] = record.serialize()
         }
 
         var state = E2eeState(
+            schemaV: Self.schema,
             installId: UUID().uuidString,
             deviceId: nil,
             registrationId: Int.random(in: 1...16380),
             identity: identity.serialize(),
-            signedPreKeys: [1: signedRecord.serialize()],
             currentSignedPreKeyId: 1,
             signedPreKeyCreatedAt: now,
-            kyberLastResort: kyberLastResort.serialize(),
-            preKeys: Dictionary(uniqueKeysWithValues: preKeys.map { ($0.id, $0.serialize()) }),
-            kyberPreKeys: Dictionary(uniqueKeysWithValues: kyberPreKeys.map { ($0.id, $0.serialize()) }),
             nextPreKeyId: Self.preKeyBatch + 1,
             nextKyberId: Self.kyberBatch + 1,
-            nextSignedId: 2)
-        // Persist before the network call: if the publish fails we retry with the
+            nextSignedId: 2,
+            store: snapshot)
+        // Persist before the network call: a failed publish retries with the
         // same keys next auth instead of minting a fresh identity.
         try E2eeVault.save(state)
-        try await publish(&state)
+        let box = E2eeStateBox(state)
+        self.box = box
+        cachedStore = nil
+        try await publish(box)
     }
 
-    private func publish(_ state: inout E2eeState) async throws {
+    private func publish(_ box: E2eeStateBox) async throws {
+        let state = box.state
         let identity = try IdentityKeyPair(bytes: state.identity)
-        guard let signedData = state.signedPreKeys[state.currentSignedPreKeyId] else {
+        guard
+            let signedData = state.store.signedPreKeys[String(state.currentSignedPreKeyId)],
+            let kyberLastResortData = state.store.kyberPreKeys[String(E2eeIds.kyberLastResort)]
+        else {
             E2eeVault.destroy()
+            self.box = nil
+            cachedStore = nil
             try await generateAndPublish()
             return
         }
-        let signedRecord = try SignedPreKeyRecord(bytes: signedData)
-        let kyberLastResort = try KyberPreKeyRecord(bytes: state.kyberLastResort)
 
-        let request = PublishKeysRequest(
+        let signedRecord = try SignedPreKeyRecord(bytes: signedData)
+        let kyberLastResort = try KyberPreKeyRecord(bytes: kyberLastResortData)
+        let preKeys = try state.store.preKeys.values.map { try PreKeyRecord(bytes: $0) }
+        let kyberPreKeys = try state.store.kyberPreKeys
+            .filter { $0.key != String(E2eeIds.kyberLastResort) }
+            .values.map { try KyberPreKeyRecord(bytes: $0) }
+
+        let response = try await APIClient.shared.publishKeys(PublishKeysRequest(
             installId: state.installId,
             platform: "IOS",
             registrationId: state.registrationId,
             identityKey: identity.publicKey.serialize().base64EncodedString(),
             signedPreKey: try signedRecord.toDto(),
             kyberLastResort: try kyberLastResort.toDto(),
-            oneTimePreKeys: try state.preKeys.values.map { try PreKeyRecord(bytes: $0).toDto() },
-            kyberPreKeys: try state.kyberPreKeys.values.map { try KyberPreKeyRecord(bytes: $0).toDto() })
+            oneTimePreKeys: try preKeys.map { try $0.toDto() },
+            kyberPreKeys: try kyberPreKeys.map { try $0.toDto() }))
 
-        let response = try await APIClient.shared.publishKeys(request)
-        state.deviceId = response.deviceId
-        try E2eeVault.save(state)
+        box.state.deviceId = response.deviceId
+        box.save()
         print("E2ee: published key bundle as device \(response.deviceId)")
     }
 
-    // ── Upkeep: top-up + rotation ─────────────────────────────────────────────
+    // MARK: - Upkeep: top-up + rotation
 
-    private func maintain(_ state: inout E2eeState) async throws {
+    private func maintain(_ box: E2eeStateBox) async throws {
         let counts: PreKeyCountResponse
         do {
-            counts = try await APIClient.shared.preKeyCount(installId: state.installId)
+            counts = try await APIClient.shared.preKeyCount(installId: box.state.installId)
         } catch let APIError.server(_, status) where status == 404 {
-            // The server no longer knows this install (e.g. a dev DB reset): publish again.
-            try await publish(&state)
+            // The server no longer knows this install (e.g. a dev DB reset).
+            try await publish(box)
             return
         }
 
         if counts.oneTimePreKeys < Self.topUpThreshold || counts.kyberPreKeys < Self.topUpThreshold {
-            try await topUp(&state)
+            try await topUp(box)
         }
 
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        if now > state.signedPreKeyCreatedAt, now - state.signedPreKeyCreatedAt > Self.signedPreKeyMaxAgeMs {
-            try await rotateSignedPreKey(&state)
+        if now > box.state.signedPreKeyCreatedAt,
+           now - box.state.signedPreKeyCreatedAt > Self.signedPreKeyMaxAgeMs {
+            try await rotateSignedPreKey(box)
         }
     }
 
-    private func topUp(_ state: inout E2eeState) async throws {
-        let identity = try IdentityKeyPair(bytes: state.identity)
+    private func topUp(_ box: E2eeStateBox) async throws {
+        let identity = try IdentityKeyPair(bytes: box.state.identity)
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
+        let nextPre = box.state.nextPreKeyId
+        let nextKyber = box.state.nextKyberId
 
-        let preKeys = try (state.nextPreKeyId..<state.nextPreKeyId + Self.preKeyBatch).map {
+        let preKeys = try (nextPre..<nextPre + Self.preKeyBatch).map {
             try PreKeyRecord(id: $0, privateKey: PrivateKey.generate())
         }
-        let kyberPreKeys = try (state.nextKyberId..<state.nextKyberId + Self.kyberBatch).map { id -> KyberPreKeyRecord in
-            let pair = KEMKeyPair.generate()
-            return try KyberPreKeyRecord(
-                id: id, timestamp: now, keyPair: pair,
-                signature: identity.privateKey.generateSignature(message: pair.publicKey.serialize()))
+        let kyberPreKeys = try (nextKyber..<nextKyber + Self.kyberBatch).map {
+            try Self.makeKyberPreKey(identity: identity, id: $0, now: now)
         }
 
         _ = try await APIClient.shared.topUpPreKeys(TopUpPreKeysRequest(
-            installId: state.installId,
+            installId: box.state.installId,
             oneTimePreKeys: try preKeys.map { try $0.toDto() },
             kyberPreKeys: try kyberPreKeys.map { try $0.toDto() }))
 
-        for record in preKeys { state.preKeys[record.id] = record.serialize() }
-        for record in kyberPreKeys { state.kyberPreKeys[record.id] = record.serialize() }
-        state.nextPreKeyId += Self.preKeyBatch
-        state.nextKyberId += Self.kyberBatch
-        try E2eeVault.save(state)
+        for record in preKeys { box.state.store.preKeys[String(record.id)] = record.serialize() }
+        for record in kyberPreKeys { box.state.store.kyberPreKeys[String(record.id)] = record.serialize() }
+        box.state.nextPreKeyId = nextPre + Self.preKeyBatch
+        box.state.nextKyberId = nextKyber + Self.kyberBatch
+        box.save()
+        cachedStore = nil // rebuilt from the updated snapshot on next use
         print("E2ee: topped up prekeys (+\(Self.preKeyBatch) EC, +\(Self.kyberBatch) kyber)")
     }
 
-    private func rotateSignedPreKey(_ state: inout E2eeState) async throws {
-        let identity = try IdentityKeyPair(bytes: state.identity)
+    private func rotateSignedPreKey(_ box: E2eeStateBox) async throws {
+        let identity = try IdentityKeyPair(bytes: box.state.identity)
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
-        let priv = PrivateKey.generate()
-        let record = try SignedPreKeyRecord(
-            id: state.nextSignedId, timestamp: now, privateKey: priv,
-            signature: identity.privateKey.generateSignature(message: priv.publicKey.serialize()))
+        let record = try Self.makeSignedPreKey(identity: identity, id: box.state.nextSignedId, now: now)
 
         _ = try await APIClient.shared.rotateSignedPreKey(RotateSignedPreKeyRequest(
-            installId: state.installId, signedPreKey: try record.toDto()))
+            installId: box.state.installId, signedPreKey: try record.toDto()))
 
         // Keep superseded records: in-flight PreKey messages may still reference them.
-        state.signedPreKeys[record.id] = record.serialize()
-        state.currentSignedPreKeyId = record.id
-        state.signedPreKeyCreatedAt = now
-        state.nextSignedId += 1
-        try E2eeVault.save(state)
+        box.state.store.signedPreKeys[String(record.id)] = record.serialize()
+        box.state.currentSignedPreKeyId = record.id
+        box.state.signedPreKeyCreatedAt = now
+        box.state.nextSignedId = record.id + 1
+        box.save()
+        cachedStore = nil
         print("E2ee: rotated signed prekey to id \(record.id)")
+    }
+
+    // MARK: - Record helpers
+
+    private static func makeSignedPreKey(identity: IdentityKeyPair, id: UInt32, now: UInt64) throws -> SignedPreKeyRecord {
+        let priv = PrivateKey.generate()
+        return try SignedPreKeyRecord(
+            id: id, timestamp: now, privateKey: priv,
+            signature: identity.privateKey.generateSignature(message: priv.publicKey.serialize()))
+    }
+
+    private static func makeKyberPreKey(identity: IdentityKeyPair, id: UInt32, now: UInt64) throws -> KyberPreKeyRecord {
+        let pair = KEMKeyPair.generate()
+        return try KyberPreKeyRecord(
+            id: id, timestamp: now, keyPair: pair,
+            signature: identity.privateKey.generateSignature(message: pair.publicKey.serialize()))
     }
 }
 
-// ── Record → DTO helpers ──────────────────────────────────────────────────────
+// MARK: - Record → DTO helpers
 
 private extension PreKeyRecord {
     func toDto() throws -> OneTimePreKeyDto {

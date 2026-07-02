@@ -32,7 +32,7 @@ struct Conversation: Codable, Identifiable, Hashable {
     var avatarUrl: String?
     let createdById: String?
     let members: [Member]
-    let lastMessage: Message?
+    var lastMessage: Message?
     var unreadCount: Int?   // present on the conversations list; absent elsewhere
 
     struct Member: Codable, Hashable {
@@ -114,6 +114,12 @@ struct ReplyPreview: Codable, Hashable {
     let preview: String        // truncated body or a kind label ("📷 Photo", …)
 }
 
+struct MessageEnvelope: Codable, Hashable {
+    let deviceId: UInt32
+    let type: Int
+    let ciphertext: String
+}
+
 struct Message: Codable, Identifiable, Hashable {
     let id: String
     let conversationId: String
@@ -129,6 +135,10 @@ struct Message: Codable, Identifiable, Hashable {
     var replyTo: ReplyPreview?   // the quoted message, when this is a reply
     var reactions: [Reaction] = []
     var deletedAt: String?       // set when deleted for everyone
+    // CIPHERTEXT messages (E2EE): sender's protocol device + the envelopes
+    // addressed to this user's devices (this client picks its own by deviceId).
+    var senderDeviceId: Int?
+    var envelopes: [MessageEnvelope]?
 
     var isCallEvent: Bool { kind == "CALL_EVENT" }
     var isSticker: Bool { kind == "STICKER" }
@@ -138,6 +148,7 @@ struct Message: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id, conversationId, senderId, body, kind, createdAt, attachments, status
         case stickerId, stickerUrl, call, replyTo, reactions, deletedAt
+        case senderDeviceId, envelopes
     }
 
     // Tolerant decode (body/kind may be empty; attachments absent on older payloads).
@@ -157,18 +168,22 @@ struct Message: Codable, Identifiable, Hashable {
         replyTo = try? c.decode(ReplyPreview.self, forKey: .replyTo)
         reactions = (try? c.decode([Reaction].self, forKey: .reactions)) ?? []
         deletedAt = try? c.decode(String.self, forKey: .deletedAt)
+        senderDeviceId = try? c.decode(Int.self, forKey: .senderDeviceId)
+        envelopes = try? c.decode([MessageEnvelope].self, forKey: .envelopes)
     }
 
     // Convenience init so building a Message locally stays ergonomic.
     init(id: String, conversationId: String, senderId: String, body: String,
          kind: String, createdAt: String, attachments: [Attachment] = [], status: String? = nil,
          stickerId: String? = nil, stickerUrl: String? = nil, call: CallEvent? = nil,
-         replyTo: ReplyPreview? = nil, reactions: [Reaction] = [], deletedAt: String? = nil) {
+         replyTo: ReplyPreview? = nil, reactions: [Reaction] = [], deletedAt: String? = nil,
+         senderDeviceId: Int? = nil, envelopes: [MessageEnvelope]? = nil) {
         self.id = id; self.conversationId = conversationId; self.senderId = senderId
         self.body = body; self.kind = kind; self.createdAt = createdAt
         self.attachments = attachments; self.status = status
         self.stickerId = stickerId; self.stickerUrl = stickerUrl; self.call = call
         self.replyTo = replyTo; self.reactions = reactions; self.deletedAt = deletedAt
+        self.senderDeviceId = senderDeviceId; self.envelopes = envelopes
     }
 }
 

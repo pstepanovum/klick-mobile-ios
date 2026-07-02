@@ -12,18 +12,26 @@ enum E2eeVault {
     private static let fileName = "klic-e2ee.sealed"
 
     static func load<T: Decodable>(_ type: T.Type) -> T? {
+        load(type, file: fileName)
+    }
+
+    static func save<T: Encodable>(_ value: T) throws {
+        try save(value, file: fileName)
+    }
+
+    static func load<T: Decodable>(_ type: T.Type, file: String) -> T? {
         guard let key = existingKey(),
-              let sealed = try? Data(contentsOf: fileURL()),
+              let sealed = try? Data(contentsOf: fileURL(file)),
               let box = try? AES.GCM.SealedBox(combined: sealed),
               let plain = try? AES.GCM.open(box, using: key)
         else { return nil } // no state yet, or the Keychain key is gone → start over
         return try? JSONDecoder().decode(T.self, from: plain)
     }
 
-    static func save<T: Encodable>(_ value: T) throws {
+    static func save<T: Encodable>(_ value: T, file: String) throws {
         let plain = try JSONEncoder().encode(value)
         let sealed = try AES.GCM.seal(plain, using: loadOrCreateKey()).combined!
-        var url = fileURL()
+        var url = fileURL(file)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try sealed.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -33,7 +41,7 @@ enum E2eeVault {
     }
 
     static func destroy() {
-        try? FileManager.default.removeItem(at: fileURL())
+        try? FileManager.default.removeItem(at: fileURL(fileName))
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -43,9 +51,9 @@ enum E2eeVault {
 
     // MARK: - Key handling
 
-    private static func fileURL() -> URL {
+    private static func fileURL(_ file: String) -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(fileName)
+            .appendingPathComponent(file)
     }
 
     private static func existingKey() -> SymmetricKey? {
