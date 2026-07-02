@@ -23,6 +23,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         registry.desiredPushTypes = [.voIP]
         voipRegistry = registry
 
+        // Arm system PiP whenever a call has live remote video, so backgrounding the app
+        // mid-video-call pops the remote feed into the floating system window.
+        MainActor.assumeIsolated { CallPictureInPicture.shared.start() }
+
         // Launch beacon: distinguishes "iOS never launched the killed app for a VoIP push"
         // (no beacon in the server journal) from "launched but died in the push path"
         // (beacon present, pushkit.* absent) when diagnosing missed rings.

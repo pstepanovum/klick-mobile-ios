@@ -130,12 +130,12 @@ struct ShareView: View {
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
                 Button(action: { Task { await send() } }) {
                     Text(selected.count > 1 ? "Send to \(selected.count) friends" : "Send")
-                        .font(.headline)
+                        .font(KlicFont.headline(16))
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 13)
                         .background(
                             selected.isEmpty ? Color(.systemGray4) : KlicColor.primary,
-                            in: RoundedRectangle(cornerRadius: 12)
+                            in: Capsule()
                         )
                         .foregroundStyle(.white)
                 }

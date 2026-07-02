@@ -97,6 +97,9 @@ final class CallKitManager: NSObject, ObservableObject {
         // Group invites ring as "<Caller> · <Group title>" so the system UI shows both.
         update.remoteHandle = CXHandle(type: .generic, value: invite.displayTitle)
         update.hasVideo = invite.kind == "VIDEO"
+        // Answering a native call mid-Klic-call should HOLD us (CXSetHeldCallAction),
+        // not force the user into "End & Accept".
+        update.supportsHolding = true
         provider.reportNewIncomingCall(with: uuid, update: update) { error in
             if let error {
                 APIClient.mobileDiagnostic(
@@ -343,10 +346,12 @@ final class CallKitManager: NSObject, ObservableObject {
         if connectedAt == nil { connectedAt = Date() }
     }
 
-    /// Whether media was established for the current call. "Reconnecting…" counts: the call WAS
-    /// connected and is only riding out a network blip — ending it then must be a server `end`
-    /// (outcome completed), not a decline/cancel.
-    private var isMediaConnected: Bool { statusText == "Connected" || statusText == "Reconnecting…" }
+    /// Whether media was established for the current call. "Reconnecting…" and "On Hold" count:
+    /// the call WAS connected and is only riding out a blip/hold — ending it then must be a
+    /// server `end` (outcome completed), not a decline/cancel.
+    private var isMediaConnected: Bool {
+        statusText == "Connected" || statusText == "Reconnecting…" || statusText == "On Hold"
+    }
 
     /// The in-flight server-side teardown (end/cancel/decline) of the most recently finished
     /// call. Starting a new call awaits this first — otherwise POST /calls races our own
@@ -607,6 +612,10 @@ extension CallKitManager: CXProviderDelegate {
         Task { @MainActor in
             guard let call = activeCall else { action.fail(); return }
             action.fulfill()
+            // Outgoing calls must also be holdable (see reportIncoming's supportsHolding).
+            let holdUpdate = CXCallUpdate()
+            holdUpdate.supportsHolding = true
+            provider.reportCall(with: action.uuid, updated: holdUpdate)
             // Tell CallKit the outgoing call is connecting. Reporting the outgoing-call lifecycle is
             // what makes the system reliably activate the call's audio session (→ provider
             // didActivate → publishMicIfReady publishes the mic). Without it, didActivate can be
@@ -679,6 +688,32 @@ extension CallKitManager: CXProviderDelegate {
             await CallService.shared.leave()
             CallActivityController.end()
             activeCall = nil
+        }
+    }
+
+    /// CallKit holds/unholds the call — issued automatically when the user answers a native
+    /// phone call mid-Klic-call (and again when that call ends). On hold: mute the mic and
+    /// gate the audio engine off (CallService.setHold reuses the existing engine/mic
+    /// plumbing); on unhold: restore both and go back to Connected.
+    nonisolated func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+        Task { @MainActor in
+            APIClient.mobileDiagnostic(
+                event: "callkit.hold",
+                callId: callId(for: action.callUUID),
+                detail: action.isOnHold ? "on" : "off"
+            )
+            await CallService.shared.setHold(action.isOnHold)
+            if action.isOnHold {
+                if isMediaConnected { statusText = "On Hold" }
+            } else if statusText == "On Hold" {
+                statusText = "Connected"
+            }
+            CallActivityController.update(
+                status: statusText,
+                muted: !CallService.shared.micEnabled,
+                isVideo: activeCall?.isVideo ?? false
+            )
+            action.fulfill()
         }
     }
 

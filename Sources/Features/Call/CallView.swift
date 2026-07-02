@@ -23,10 +23,13 @@ struct CallView: View {
 
     var body: some View {
         GeometryReader { geo in
-            // Pick which feed is full-screen and which rides in the draggable card.
+            // Pick which feed is full-screen and which rides in the draggable card. The
+            // fullscreen surface only ever carries video when the REMOTE side has video
+            // (§7.6) — my own camera alone renders as the small preview card over the
+            // themed avatar layout, never as the fullscreen "video look".
             let local = service.cameraEnabled ? service.localVideoTrack : nil
-            let remote = service.remoteVideoTrack
-            let primaryIsLocal = localFullscreen && local != nil
+            let remote = isGrid ? nil : service.remoteVideoTrack
+            let primaryIsLocal = localFullscreen && local != nil && remote != nil
             let primaryTrack = primaryIsLocal ? local : remote
             let secondaryTrack = primaryIsLocal ? remote : local
 
@@ -35,7 +38,7 @@ struct CallView: View {
 
                 if isGrid {
                     participantGrid
-                } else if shouldShowVideo, let primaryTrack {
+                } else if let primaryTrack {
                     CallVideoView(track: primaryTrack).ignoresSafeArea()
                 } else {
                     avatar
@@ -57,10 +60,10 @@ struct CallView: View {
                         } label: {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 17, weight: .semibold))
-                                .foregroundStyle(shouldShowVideo ? Color.white : KlicColor.textPrimary)
+                                .foregroundStyle(videoLook ? Color.white : KlicColor.textPrimary)
                                 .frame(width: 38, height: 38)
                                 .background(
-                                    shouldShowVideo ? Color.black.opacity(0.35) : KlicColor.surfaceRaised,
+                                    videoLook ? Color.black.opacity(0.35) : KlicColor.surfaceRaised,
                                     in: Circle()
                                 )
                         }
@@ -73,11 +76,12 @@ struct CallView: View {
                 .padding(.top, 56)
 
                 // Draggable picture-in-picture card: in the 1:1 layout it holds the secondary
-                // feed and swaps on tap; in the grid it's always the local camera preview.
+                // feed (swap on tap when both sides have video, my lone camera preview
+                // otherwise); in the grid it's always the local camera preview.
                 if isGrid, let local {
                     pipCard(track: local, geo: geo, allowSwap: false)
-                } else if !isGrid, shouldShowVideo, let secondaryTrack {
-                    pipCard(track: secondaryTrack, geo: geo, allowSwap: true)
+                } else if !isGrid, let secondaryTrack {
+                    pipCard(track: secondaryTrack, geo: geo, allowSwap: local != nil && remote != nil)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -108,12 +112,13 @@ struct CallView: View {
     }
 
     /// Draggable, side-snapping PiP card; `allowSwap` enables the 1:1 tap-to-swap behavior.
+    /// The live drag renders as a pure offset from the committed position (no per-frame
+    /// state writes that relayout the screen); release commits where the finger left off
+    /// and springs to the edge the flick was headed for (predicted end point).
     private func pipCard(track: VideoTrack, geo: GeometryProxy, allowSwap: Bool) -> some View {
         let defaultCenter = CGPoint(x: geo.size.width - cardSize.width / 2 - 16,
                                     y: cardSize.height / 2 + 80)
         let center = cardCenter ?? defaultCenter
-        let live = CGPoint(x: center.x + dragTranslation.width,
-                           y: center.y + dragTranslation.height)
         return CallVideoView(track: track)
             .frame(width: cardSize.width, height: cardSize.height)
             .clipShape(RoundedRectangle(cornerRadius: 18))
@@ -129,19 +134,34 @@ struct CallView: View {
                 }
             }
             .shadow(radius: 8)
-            .position(live)
+            .position(center)
+            .offset(dragTranslation)
             .gesture(
                 DragGesture()
                     .updating($dragTranslation) { value, state, _ in state = value.translation }
                     .onEnded { value in
-                        var c = CGPoint(x: center.x + value.translation.width,
-                                        y: center.y + value.translation.height)
-                        // Snap to the nearest side, clamp vertically to stay on screen.
+                        // Commit exactly where the finger let go, unanimated — the gesture
+                        // state resets to .zero in this same update, so the card doesn't
+                        // jump — then spring to the snapped spot on the next runloop turn.
+                        let release = CGPoint(x: center.x + value.translation.width,
+                                              y: center.y + value.translation.height)
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) { cardCenter = release }
+
+                        let predicted = CGPoint(x: center.x + value.predictedEndTranslation.width,
+                                                y: center.y + value.predictedEndTranslation.height)
+                        // Snap to the side the flick was headed for, clamp vertically.
+                        var target = predicted
                         let halfW = cardSize.width / 2 + 16
-                        c.x = c.x < geo.size.width / 2 ? halfW : geo.size.width - halfW
-                        c.y = min(max(c.y, cardSize.height / 2 + 70),
-                                  geo.size.height - cardSize.height / 2 - 70)
-                        withAnimation(.spring(response: 0.3)) { cardCenter = c }
+                        target.x = predicted.x < geo.size.width / 2 ? halfW : geo.size.width - halfW
+                        target.y = min(max(target.y, cardSize.height / 2 + 70),
+                                       geo.size.height - cardSize.height / 2 - 70)
+                        Task { @MainActor in
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                                cardCenter = target
+                            }
+                        }
                     }
             )
             .onTapGesture { if allowSwap { withAnimation { localFullscreen.toggle() } } }
@@ -157,24 +177,31 @@ struct CallView: View {
         }
     }
 
-    private var header: some View {
-        // Over video: the name is plain white text and only the status ("Connected") gets a small
-        // white pill. On a voice/avatar call, use theme colors with no pill.
-        VStack(spacing: 8) {
-            Text(call.peerName)
-                .font(KlicFont.title())
-                .foregroundStyle(shouldShowVideo ? Color.white : KlicColor.textPrimary)
-            if shouldShowVideo {
-                Text(callKit.statusText)
+    // §7.6: with the remote video fullscreen the header disappears entirely (controls
+    // remain); an "On Hold" pill still surfaces over the video. Everything else — voice
+    // call, or the peer's camera off even while MY camera is on — gets the standard
+    // themed layout: name + status pill in theme colors, never white-on-nothing.
+    @ViewBuilder private var header: some View {
+        if videoLook {
+            if service.isOnHold {
+                Text("On Hold")
                     .font(KlicFont.caption(13))
                     .foregroundStyle(Color.black.opacity(0.8))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
                     .background(Capsule().fill(Color.white))
-            } else {
+            }
+        } else {
+            VStack(spacing: 8) {
+                Text(call.peerName)
+                    .font(KlicFont.title())
+                    .foregroundStyle(KlicColor.textPrimary)
                 Text(callKit.statusText)
-                    .font(KlicFont.body())
+                    .font(KlicFont.caption(13))
                     .foregroundStyle(KlicColor.textMuted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(KlicColor.surfaceRaised, in: Capsule())
             }
         }
     }
@@ -192,7 +219,7 @@ struct CallView: View {
                     CallActivityController.update(
                         status: callKit.statusText,
                         muted: !service.micEnabled,
-                        isVideo: shouldShowVideo
+                        isVideo: hasAnyVideo
                     )
                 }
             }
@@ -216,7 +243,7 @@ struct CallView: View {
                     CallActivityController.update(
                         status: callKit.statusText,
                         muted: !service.micEnabled,
-                        isVideo: shouldShowVideo
+                        isVideo: hasAnyVideo
                     )
                 }
             }
@@ -246,7 +273,15 @@ struct CallView: View {
         .buttonStyle(.plain)
     }
 
-    private var shouldShowVideo: Bool {
+    /// The "video-call look" (white chrome over the fullscreen feed) keys on REMOTE video
+    /// being rendered fullscreen — NOT on the local camera state (§7.6). In the group grid
+    /// the background is themed, so the themed chrome applies there too.
+    private var videoLook: Bool {
+        !isGrid && service.remoteVideoTrack != nil
+    }
+
+    /// Whether any video is on screen at all — only used for the Live Activity's video flag.
+    private var hasAnyVideo: Bool {
         service.cameraEnabled || service.localVideoTrack != nil || service.remoteVideoTrack != nil
     }
 }
