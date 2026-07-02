@@ -72,15 +72,12 @@ final class MediaPlayerBox: ObservableObject {
     private func addTimeObserverIfNeeded() {
         guard timeObserver == nil else { return }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main) { [weak self] time in
-            guard let self else { return }
-            let player = self.player
-            let onProgress = self.onProgress
-            let current = CMTimeGetSeconds(time)
-            let total = CMTimeGetSeconds(player.currentItem?.duration ?? .zero)
-            let playing = player.rate != 0
-            Task { @MainActor in
-                self.isPlaying = playing
-                onProgress?(current.isFinite ? current : 0, total.isFinite ? total : 0)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let current = CMTimeGetSeconds(time)
+                let total = CMTimeGetSeconds(self.player.currentItem?.duration ?? .zero)
+                self.isPlaying = self.player.rate != 0
+                self.onProgress?(current.isFinite ? current : 0, total.isFinite ? total : 0)
             }
         }
     }
