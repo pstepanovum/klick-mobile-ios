@@ -179,6 +179,11 @@ actor APIClient {
         try await post("/calls", body: ["conversationId": conversationId, "kind": kind])
     }
 
+    /// The conversation's in-progress call, if any (404 when there is none).
+    func activeCall(conversationId: String) async throws -> ActiveCallInfo {
+        try await get("/conversations/\(conversationId)/active-call")
+    }
+
     func joinToken(callId: String) async throws -> CallSession {
         try await post("/calls/\(callId)/token", body: [:])
     }

@@ -2,11 +2,23 @@ import Foundation
 import AVFoundation
 import LiveKit
 
-/// Wraps a LiveKit room for a 1:1 call: join/leave, in-call controls (mute mic, camera on/off),
-/// and publishes the local + remote video tracks for rendering. Media is routed by the SFU.
+/// Wraps a LiveKit room for a call: join/leave, in-call controls (mute mic, camera on/off),
+/// and publishes the local video track plus a per-remote participant list for rendering
+/// (one entry for a 1:1 call, several for a group call). Media is routed by the SFU.
 @MainActor
 final class CallService: NSObject, ObservableObject {
     static let shared = CallService()
+
+    /// One remote member of the call, keyed by their userId (the LiveKit identity).
+    struct RemoteCallParticipant: Identifiable {
+        let id: String              // userId == LiveKit identity
+        let name: String
+        var videoTrack: VideoTrack?
+        var micMuted: Bool
+        var isSpeaking: Bool
+        /// True while the participant dropped from the SFU and their 60s grace timer runs.
+        var isInGrace: Bool
+    }
 
     private(set) var room = Room()
     private var currentCallId: String?
@@ -19,10 +31,24 @@ final class CallService: NSObject, ObservableObject {
     @Published private(set) var speakerOn = false
     @Published private(set) var localVideoTrack: VideoTrack?
     @Published private(set) var remoteVideoTrack: VideoTrack?
+    /// Remote members of the call (live from the room, plus peers inside their grace window).
+    @Published private(set) var participants: [RemoteCallParticipant] = []
 
     /// Set while we're tearing the room down on purpose, so the resulting `.disconnected`
     /// state change isn't mistaken for a network drop that should end the call.
     private var isLeaving = false
+
+    /// Peers that dropped from the SFU and are inside their 60s reconnect grace window,
+    /// keyed by identity (userId) → last-known display name. A dropped peer NEVER ends the
+    /// call directly (D1) — only its grace expiry does, and only for a 1:1 call.
+    private var gracePeers: [String: String] = [:]
+    private var graceTasks: [String: Task<Void, Never>] = [:]
+
+    /// Runs while we re-enter the room after a terminal local disconnect (LiveKit's own
+    /// resume gave up, e.g. WiFi→LTE with an IP change). Canceled by leave().
+    private var rejoinTask: Task<Void, Never>?
+
+    private var isGroupCall: Bool { CallKitManager.shared.activeCall?.isGroup ?? false }
 
     /// True once CallKit has reported the audio session active for the current call.
     /// LiveKit's audio engine stays gated off until then so it can't activate the session
@@ -52,11 +78,15 @@ final class CallService: NSObject, ObservableObject {
         room.add(delegate: self)
     }
 
-    func join(callId: String, url: String, token: String, video: Bool) async throws {
+    /// `rejoin` re-enters an ongoing call after a terminal disconnect: the room is force-recreated
+    /// (the old one is dead), isReconnecting stays up until the loop succeeds, and the mic goes
+    /// through the exact same publishMicIfReady gating — audioSessionActive is already true
+    /// mid-call (CallKit never deactivated), so the publish happens right after connect.
+    func join(callId: String, url: String, token: String, video: Bool, rejoin: Bool = false) async throws {
         do {
             isLeaving = false
-            isReconnecting = false
-            prepareRoom(callId: callId)
+            if !rejoin { isReconnecting = false }
+            prepareRoom(callId: callId, force: rejoin)
             APIClient.mobileDiagnostic(event: "livekit.join.configure", callId: callId, detail: video ? "video" : "audio")
             // Hand LiveKit a fixed, valid session configuration instead of letting it compute
             // one on the fly — the dynamic path occasionally failed to configure on the first
@@ -238,12 +268,18 @@ final class CallService: NSObject, ObservableObject {
     func leave() async {
         let callId = currentCallId
         isLeaving = true
+        // A user-initiated (or remote-signaled) teardown cancels any in-flight rejoin
+        // attempt and all remote-drop grace timers.
+        rejoinTask?.cancel()
+        rejoinTask = nil
+        cancelAllGrace()
         APIClient.mobileDiagnostic(event: "livekit.leave.start", callId: callId)
         await room.disconnect()
         isConnected = false
         isReconnecting = false
         localVideoTrack = nil
         remoteVideoTrack = nil
+        participants = []
         currentCallId = nil
         // Reset the audio gate for the next call. Re-enable engine availability so any non-call
         // audio isn't left disabled; the next join() re-gates it off until CallKit activates.
@@ -255,12 +291,13 @@ final class CallService: NSObject, ObservableObject {
         APIClient.mobileDiagnostic(event: "livekit.leave.ok", callId: callId)
     }
 
-    private func prepareRoom(callId: String) {
+    private func prepareRoom(callId: String, force: Bool = false) {
         // Only recreate the room when switching to a different call.
         // If the room is already connecting/connected for this same callId,
         // leave it alone — recreating it would orphan the live session and
         // briefly produce two concurrent LiveKit rooms (the duplicate-video bug).
-        if currentCallId != callId {
+        // A rejoin forces a fresh Room: the old one is terminally disconnected.
+        if force || currentCallId != callId {
             room.remove(delegate: self)
             room = Room()
             room.add(delegate: self)
@@ -274,12 +311,142 @@ final class CallService: NSObject, ObservableObject {
         remoteVideoTrack = room.remoteParticipants.values
             .flatMap { $0.videoTracks }
             .first?.track as? VideoTrack
+        refreshParticipants()
         APIClient.mobileDiagnostic(
             event: "livekit.tracks.refresh",
             callId: currentCallId,
             detail: "localVideo=\(localVideoTrack != nil) remoteVideo=\(remoteVideoTrack != nil)"
         )
         updateAudioRouteForVideo()
+    }
+
+    /// Rebuild the participants array from the live room plus any peers in grace. Called on
+    /// its own for mute/speaking updates (they're frequent — no diagnostics, no route change).
+    private func refreshParticipants() {
+        var list: [RemoteCallParticipant] = room.remoteParticipants.values.compactMap { p in
+            guard let id = p.identity?.stringValue, !id.isEmpty else { return nil }
+            let name = p.name?.isEmpty == false ? p.name! : (gracePeers[id] ?? "Participant")
+            return RemoteCallParticipant(
+                id: id,
+                name: name,
+                videoTrack: p.videoTracks.first?.track as? VideoTrack,
+                micMuted: !p.isMicrophoneEnabled(),
+                isSpeaking: p.isSpeaking,
+                isInGrace: false
+            )
+        }
+        let present = Set(list.map(\.id))
+        for (id, name) in gracePeers where !present.contains(id) {
+            list.append(RemoteCallParticipant(
+                id: id, name: name, videoTrack: nil, micMuted: true, isSpeaking: false, isInGrace: true
+            ))
+        }
+        participants = list.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+    }
+
+    // MARK: Remote-drop grace (per-participant, 60s)
+
+    /// Hold a dropped peer's spot for 60s instead of ending the call. If they reconnect
+    /// (participantDidConnect with the same identity) the timer is canceled; on expiry a
+    /// 1:1 call ends (server notified — outcome completed), a group call just drops the tile
+    /// (the server retires the call when its last participant leaves).
+    private func startGrace(identity: String, name: String, callId: String) {
+        gracePeers[identity] = name
+        graceTasks[identity]?.cancel()
+        APIClient.mobileDiagnostic(event: "livekit.remote.grace.start", callId: callId, detail: identity)
+        graceTasks[identity] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            guard let self, !Task.isCancelled, self.currentCallId == callId,
+                  self.gracePeers[identity] != nil else { return }
+            self.gracePeers[identity] = nil
+            self.graceTasks[identity] = nil
+            self.refreshParticipants()
+            APIClient.mobileDiagnostic(event: "livekit.remote.grace.expired", callId: callId, detail: identity)
+            if !self.isGroupCall {
+                CallKitManager.shared.handlePeerGraceExpired(callId: callId)
+            }
+        }
+        // 1:1: surface the only peer's drop as "Reconnecting…" while the window runs.
+        if !isGroupCall { CallKitManager.shared.handleReconnecting(callId: callId) }
+    }
+
+    private func clearGrace(identity: String) {
+        graceTasks[identity]?.cancel()
+        graceTasks[identity] = nil
+        gracePeers[identity] = nil
+    }
+
+    private func cancelAllGrace() {
+        for task in graceTasks.values { task.cancel() }
+        graceTasks.removeAll()
+        gracePeers.removeAll()
+    }
+
+    // MARK: Rejoin loop (local terminal disconnect)
+
+    /// LiveKit's built-in resume gave up. Instead of ending the call (D1), fetch a fresh token
+    /// and reconnect: backoff 1s/2s/4s then 8s steps, ~60s total budget. 404/409/410 on the
+    /// token mean the call is already over server-side → finish quietly, no server notify.
+    /// Canceled by hang-up (leave()) or a socket call:end/cancel/decline.
+    private func startRejoin(callId: String) {
+        guard rejoinTask == nil else { return }
+        isReconnecting = true
+        // The room connection is gone — any per-peer grace timers are about US, not them.
+        cancelAllGrace()
+        CallKitManager.shared.handleReconnecting(callId: callId)
+        let wasMicMuted = !micEnabled
+        let wasCameraOn = cameraEnabled
+        let wasSpeakerOn = speakerOn
+        APIClient.mobileDiagnostic(event: "livekit.rejoin.start", callId: callId)
+        rejoinTask = Task { @MainActor [weak self] in
+            defer { self?.rejoinTask = nil }
+            let deadline = Date().addingTimeInterval(60)
+            var delaySeconds = 1.0
+            while let self, !Task.isCancelled, !self.isLeaving, self.currentCallId == callId {
+                try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
+                guard !Task.isCancelled, !self.isLeaving, self.currentCallId == callId else { return }
+                // Fresh token — the old one died with the previous session.
+                let session: CallSession
+                do {
+                    session = try await APIClient.shared.joinToken(callId: callId)
+                } catch let APIError.server(_, status) where [404, 409, 410].contains(status) {
+                    APIClient.mobileDiagnostic(event: "livekit.rejoin.callOver", callId: callId, detail: "\(status)")
+                    CallKitManager.shared.handleRemoteCallEnded(callId: callId)
+                    return
+                } catch {
+                    guard Date() < deadline else { break }
+                    delaySeconds = min(delaySeconds * 2, 8)
+                    continue
+                }
+                do {
+                    // Same connect path as a first join; camera restored to the user's
+                    // pre-drop state, mic re-published via publishMicIfReady (the audio
+                    // session is still active — CallKit never deactivated it mid-call).
+                    try await self.join(
+                        callId: callId, url: session.livekitUrl, token: session.token,
+                        video: wasCameraOn, rejoin: true
+                    )
+                    if wasMicMuted { await self.setMic(enabled: false) }
+                    if self.speakerOn != wasSpeakerOn { self.setSpeaker(wasSpeakerOn) }
+                    _ = try? await APIClient.shared.mediaJoined(callId: callId)
+                    self.isReconnecting = false
+                    APIClient.mobileDiagnostic(event: "livekit.rejoin.ok", callId: callId)
+                    CallKitManager.shared.handleReconnected(callId: callId)
+                    return
+                } catch {
+                    APIClient.mobileDiagnostic(
+                        event: "livekit.rejoin.attempt.failed",
+                        callId: callId,
+                        detail: String(describing: error)
+                    )
+                    guard Date() < deadline else { break }
+                    delaySeconds = min(delaySeconds * 2, 8)
+                }
+            }
+            guard let self, !Task.isCancelled, !self.isLeaving, self.currentCallId == callId else { return }
+            APIClient.mobileDiagnostic(event: "livekit.rejoin.gaveUp", callId: callId)
+            CallKitManager.shared.handleRejoinGaveUp(callId: callId)
+        }
     }
 
     /// Keep the loudspeaker on whenever any video is on screen, and fall back to the earpiece
@@ -313,10 +480,14 @@ extension CallService: RoomDelegate {
                 isReconnecting = false
                 CallKitManager.shared.handleReconnected(callId: currentCallId)
             case .disconnected:
-                isReconnecting = false
                 if !isLeaving, let callId = currentCallId {
+                    // Terminal disconnect that wasn't a hang-up: LiveKit's resume gave up
+                    // (e.g. WiFi→LTE with an IP change). Rejoin with a fresh token instead
+                    // of ending the call (D1).
                     APIClient.mobileDiagnostic(event: "livekit.connection.lost", callId: callId)
-                    CallKitManager.shared.handleMediaPeerDisconnected(callId: callId)
+                    startRejoin(callId: callId)
+                } else {
+                    isReconnecting = false
                 }
             default:
                 break
@@ -345,7 +516,12 @@ extension CallService: RoomDelegate {
     nonisolated func room(_ room: Room, participantDidConnect participant: RemoteParticipant) {
         Task { @MainActor in
             APIClient.mobileDiagnostic(event: "livekit.remote.connect", callId: currentCallId)
+            // The same identity coming back cancels their reconnect grace window.
+            if let identity = participant.identity?.stringValue { clearGrace(identity: identity) }
             refreshTracks()
+            if !isGroupCall, gracePeers.isEmpty {
+                CallKitManager.shared.handleReconnected(callId: currentCallId)
+            }
         }
     }
 
@@ -353,10 +529,23 @@ extension CallService: RoomDelegate {
         Task { @MainActor in
             let callId = currentCallId
             APIClient.mobileDiagnostic(event: "livekit.remote.disconnect", callId: callId)
-            refreshTracks()
-            if let callId {
-                CallKitManager.shared.handleMediaPeerDisconnected(callId: callId)
+            // NEVER end the call here (D1) — the peer may just be switching networks. Hold
+            // their tile for a 60s grace window; only its expiry acts (and only for 1:1).
+            // Skip while a local rejoin runs: the whole room dropped because WE did.
+            if let callId, !isLeaving, rejoinTask == nil,
+               let identity = participant.identity?.stringValue, !identity.isEmpty {
+                let name = participant.name?.isEmpty == false ? participant.name! : identity
+                startGrace(identity: identity, name: name, callId: callId)
             }
+            refreshTracks()
         }
+    }
+
+    nonisolated func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUpdateIsMuted isMuted: Bool) {
+        Task { @MainActor in refreshParticipants() }
+    }
+
+    nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
+        Task { @MainActor in refreshParticipants() }
     }
 }

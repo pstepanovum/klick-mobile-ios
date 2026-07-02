@@ -1,4 +1,5 @@
 import SwiftUI
+import LiveKit
 import Inject
 
 struct CallView: View {
@@ -17,6 +18,9 @@ struct CallView: View {
 
     private let cardSize = CGSize(width: 110, height: 160)
 
+    /// 2+ remotes → group grid; 0–1 remote → today's 1:1 layout (fullscreen feed + swap card).
+    private var isGrid: Bool { service.participants.count >= 2 }
+
     var body: some View {
         GeometryReader { geo in
             // Pick which feed is full-screen and which rides in the draggable card.
@@ -29,7 +33,9 @@ struct CallView: View {
             ZStack {
                 KlicColor.background.ignoresSafeArea()
 
-                if shouldShowVideo, let primaryTrack {
+                if isGrid {
+                    participantGrid
+                } else if shouldShowVideo, let primaryTrack {
                     CallVideoView(track: primaryTrack).ignoresSafeArea()
                 } else {
                     avatar
@@ -42,42 +48,12 @@ struct CallView: View {
                 }
                 .padding(.vertical, 56)
 
-                // Draggable, tap-to-swap picture-in-picture card for the secondary feed.
-                if shouldShowVideo, let secondaryTrack {
-                    let defaultCenter = CGPoint(x: geo.size.width - cardSize.width / 2 - 16,
-                                                y: cardSize.height / 2 + 80)
-                    let center = cardCenter ?? defaultCenter
-                    let live = CGPoint(x: center.x + dragTranslation.width,
-                                       y: center.y + dragTranslation.height)
-                    CallVideoView(track: secondaryTrack)
-                        .frame(width: cardSize.width, height: cardSize.height)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
-                        .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.25), lineWidth: 1))
-                        .overlay(alignment: .topLeading) {
-                            Image(systemName: "arrow.up.backward.and.arrow.down.forward")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(.white)
-                                .padding(5)
-                                .background(.black.opacity(0.45), in: Circle())
-                                .padding(6)
-                        }
-                        .shadow(radius: 8)
-                        .position(live)
-                        .gesture(
-                            DragGesture()
-                                .updating($dragTranslation) { value, state, _ in state = value.translation }
-                                .onEnded { value in
-                                    var c = CGPoint(x: center.x + value.translation.width,
-                                                    y: center.y + value.translation.height)
-                                    // Snap to the nearest side, clamp vertically to stay on screen.
-                                    let halfW = cardSize.width / 2 + 16
-                                    c.x = c.x < geo.size.width / 2 ? halfW : geo.size.width - halfW
-                                    c.y = min(max(c.y, cardSize.height / 2 + 70),
-                                              geo.size.height - cardSize.height / 2 - 70)
-                                    withAnimation(.spring(response: 0.3)) { cardCenter = c }
-                                }
-                        )
-                        .onTapGesture { withAnimation { localFullscreen.toggle() } }
+                // Draggable picture-in-picture card: in the 1:1 layout it holds the secondary
+                // feed and swaps on tap; in the grid it's always the local camera preview.
+                if isGrid, let local {
+                    pipCard(track: local, geo: geo, allowSwap: false)
+                } else if !isGrid, shouldShowVideo, let secondaryTrack {
+                    pipCard(track: secondaryTrack, geo: geo, allowSwap: true)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -86,6 +62,65 @@ struct CallView: View {
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
         .enableInjection()
+    }
+
+    /// 2-column grid of remote participants (video tile, or avatar + name; dimmed while a
+    /// participant rides out their reconnect grace window). Local preview stays in the PiP card.
+    private var participantGrid: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
+                spacing: 10
+            ) {
+                ForEach(service.participants) { participant in
+                    ParticipantTile(participant: participant)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 140)
+            .padding(.bottom, 170)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    /// Draggable, side-snapping PiP card; `allowSwap` enables the 1:1 tap-to-swap behavior.
+    private func pipCard(track: VideoTrack, geo: GeometryProxy, allowSwap: Bool) -> some View {
+        let defaultCenter = CGPoint(x: geo.size.width - cardSize.width / 2 - 16,
+                                    y: cardSize.height / 2 + 80)
+        let center = cardCenter ?? defaultCenter
+        let live = CGPoint(x: center.x + dragTranslation.width,
+                           y: center.y + dragTranslation.height)
+        return CallVideoView(track: track)
+            .frame(width: cardSize.width, height: cardSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(.white.opacity(0.25), lineWidth: 1))
+            .overlay(alignment: .topLeading) {
+                if allowSwap {
+                    Image(systemName: "arrow.up.backward.and.arrow.down.forward")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(.black.opacity(0.45), in: Circle())
+                        .padding(6)
+                }
+            }
+            .shadow(radius: 8)
+            .position(live)
+            .gesture(
+                DragGesture()
+                    .updating($dragTranslation) { value, state, _ in state = value.translation }
+                    .onEnded { value in
+                        var c = CGPoint(x: center.x + value.translation.width,
+                                        y: center.y + value.translation.height)
+                        // Snap to the nearest side, clamp vertically to stay on screen.
+                        let halfW = cardSize.width / 2 + 16
+                        c.x = c.x < geo.size.width / 2 ? halfW : geo.size.width - halfW
+                        c.y = min(max(c.y, cardSize.height / 2 + 70),
+                                  geo.size.height - cardSize.height / 2 - 70)
+                        withAnimation(.spring(response: 0.3)) { cardCenter = c }
+                    }
+            )
+            .onTapGesture { if allowSwap { withAnimation { localFullscreen.toggle() } } }
     }
 
     private var avatar: some View {
@@ -183,5 +218,64 @@ struct CallView: View {
 
     private var shouldShowVideo: Bool {
         service.cameraEnabled || service.localVideoTrack != nil || service.remoteVideoTrack != nil
+    }
+}
+
+/// One remote member in the group-call grid: their video, or an avatar + name fallback,
+/// with a mute badge and a speaking highlight. A participant in their reconnect grace
+/// window renders dimmed with a "Reconnecting…" label.
+private struct ParticipantTile: View {
+    let participant: CallService.RemoteCallParticipant
+
+    var body: some View {
+        ZStack {
+            if let track = participant.videoTrack, !participant.isInGrace {
+                CallVideoView(track: track)
+            } else {
+                KlicColor.surfaceRaised
+                AvatarView(
+                    url: APIClient.avatarURL(forUserId: participant.id),
+                    name: participant.name,
+                    size: 64
+                )
+            }
+        }
+        .aspectRatio(3 / 4, contentMode: .fill)
+        .overlay(alignment: .bottomLeading) {
+            HStack(spacing: 5) {
+                Text(participant.name)
+                    .font(KlicFont.caption(12))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if participant.micMuted {
+                    Image(systemName: "mic.slash.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.black.opacity(0.45), in: Capsule())
+            .padding(8)
+        }
+        .overlay {
+            if participant.isInGrace {
+                ZStack {
+                    Color.black.opacity(0.55)
+                    Text("Reconnecting…")
+                        .font(KlicFont.caption(12))
+                        .foregroundStyle(.white)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(
+                    participant.isSpeaking && !participant.isInGrace
+                        ? KlicColor.primary : Color.white.opacity(0.15),
+                    lineWidth: participant.isSpeaking && !participant.isInGrace ? 2 : 1
+                )
+        )
     }
 }

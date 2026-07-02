@@ -235,6 +235,27 @@ struct CallSession: Codable, Identifiable {
     var id: String { callId }
 }
 
+/// An in-progress call on a conversation (GET /conversations/:id/active-call, 404 when none).
+/// Drives the "Join call" banner in group chats.
+struct ActiveCallInfo: Codable, Identifiable {
+    let callId: String
+    let conversationId: String
+    let roomName: String
+    let livekitUrl: String
+    let kind: String
+    let status: String          // "RINGING" | "ANSWERING" | "ONGOING" | "RECONNECTING"
+    let startedBy: String
+    let participants: [Participant]
+    var id: String { callId }
+    /// Participants whose media actually joined the room (joinedAt set).
+    var joinedCount: Int { participants.filter { $0.joinedAt != nil }.count }
+
+    struct Participant: Codable {
+        let userId: String
+        let joinedAt: String?
+    }
+}
+
 // MARK: - Uploads
 
 /// Server response from POST /uploads — a presigned PUT URL the client uploads to.

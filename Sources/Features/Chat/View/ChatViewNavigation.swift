@@ -3,17 +3,42 @@ import SwiftUI
 /// Calls, sender lookups, and cross-navigation to profiles/direct chats.
 extension ChatView {
     func startCall(kind: String) async {
-        guard isDirect else { return }
         guard !isStartingCall else { return }
         isStartingCall = true
         defer { isStartingCall = false }
+        // Starting a call on a conversation that already has one live joins it instead —
+        // the server would 409 the POST /calls with call_exists anyway.
+        if !isDirect, let ongoing = activeCallInfo {
+            await joinActiveCall(ongoing)
+            return
+        }
         guard let s = try? await APIClient.shared.startCall(conversationId: conversation.id, kind: kind)
         else { return }
         CallKitManager.shared.startOutgoing(
             s,
             peerName: title,
-            peerId: conversation.members.first?.id,
-            peerAvatarUrl: conversation.members.first?.avatarUrl
+            peerId: isDirect ? conversation.members.first?.id : nil,
+            peerAvatarUrl: isDirect ? conversation.members.first?.avatarUrl : nil,
+            conversationId: conversation.id,
+            isGroup: !isDirect
+        )
+    }
+
+    /// Fetch the conversation's in-progress call (group chats only) — drives the "Join call"
+    /// banner. Refreshed on open and on call:invite / call:end / call:participant-joined/left.
+    func refreshActiveCall() async {
+        guard !isDirect else { return }
+        activeCallInfo = try? await APIClient.shared.activeCall(conversationId: conversation.id)
+    }
+
+    /// Late-join the ongoing group call via the token flow (same as answering, but reported
+    /// to CallKit as an outgoing call — no incoming ring).
+    func joinActiveCall(_ info: ActiveCallInfo) async {
+        await CallKitManager.shared.joinOngoing(
+            callId: info.callId,
+            conversationId: conversation.id,
+            title: title,
+            kind: info.kind
         )
     }
 

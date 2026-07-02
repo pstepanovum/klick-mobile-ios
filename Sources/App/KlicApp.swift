@@ -1,5 +1,6 @@
 import SwiftUI
 import UserNotifications
+import Intents
 
 @main
 struct KlicApp: App {
@@ -30,6 +31,17 @@ struct KlicApp: App {
                             CallActivityController.end()
                         }
                     }
+                }
+                // Siri / CarPlay / Phone-app Recents call-back → resolve the contact and dial.
+                // The legacy audio/video intents cover older routing (still sent by some paths).
+                .onContinueUserActivity(NSStringFromClass(INStartCallIntent.self)) { activity in
+                    CallIntents.startCall(from: activity)
+                }
+                .onContinueUserActivity("INStartAudioCallIntent") { activity in
+                    CallIntents.startCall(from: activity)
+                }
+                .onContinueUserActivity("INStartVideoCallIntent") { activity in
+                    CallIntents.startCall(from: activity)
                 }
         }
     }

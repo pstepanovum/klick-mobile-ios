@@ -22,6 +22,10 @@ final class SocketService: ObservableObject {
     /// Most recent reaction / delete events — the open chat merges these into its messages.
     @Published var lastReaction: ReactionUpdate?
     @Published var lastDeleted: DeletedUpdate?
+    /// Call membership events — drive the group chat "Join call" banner and pre-join ring UX.
+    @Published var lastCallParticipantJoined: CallParticipantEvent?
+    @Published var lastCallParticipantLeft: CallParticipantEvent?
+    @Published var lastCallEnded: CallEndedEvent?
 
     private var myUserId: String?
     /// Per-conversation token used to invalidate a pending typing auto-clear.
@@ -31,6 +35,8 @@ final class SocketService: ObservableObject {
     struct Receipt: Equatable { let conversationId: String; let userId: String; let at: Date }
     struct ReactionUpdate: Equatable { let conversationId: String; let messageId: String; let reactions: [Reaction] }
     struct DeletedUpdate: Equatable { let conversationId: String; let messageId: String }
+    struct CallParticipantEvent: Equatable { let callId: String; let userId: String }
+    struct CallEndedEvent: Equatable { let callId: String }
 
     struct CallInvite: Identifiable {
         let id: String          // callId
@@ -40,6 +46,17 @@ final class SocketService: ObservableObject {
         let kind: String
         let fromDisplayName: String
         let fromUserId: String?
+        var conversationType: String?    // "DIRECT" | "GROUP"
+        var conversationTitle: String?   // group title, else the caller's display name
+        var participantCount: Int?
+        var isGroup: Bool { conversationType == "GROUP" }
+        /// What the system call UI / in-call header shows: "<Caller> · <Group title>" for groups.
+        var displayTitle: String {
+            guard isGroup else { return fromDisplayName }
+            let title = conversationTitle?.trimmingCharacters(in: .whitespaces)
+            guard let title, !title.isEmpty else { return fromDisplayName }
+            return "\(fromDisplayName) · \(title)"
+        }
     }
 
     func connect() {
@@ -143,21 +160,43 @@ final class SocketService: ObservableObject {
                   let callId = dict["callId"] as? String else { return }
             CallKitManager.shared.handlePeerAccepted(callId: callId)
         }
+        socket.on("call:participant-joined") { [weak self] data, _ in
+            guard let self,
+                  let dict = data.first as? [String: Any],
+                  let callId = dict["callId"] as? String,
+                  let userId = dict["userId"] as? String else { return }
+            self.lastCallParticipantJoined = CallParticipantEvent(callId: callId, userId: userId)
+            // Someone else's media joined — a group call is "answered" on the first join
+            // (1:1 also gets call:accept). Fires on EVERY media-joined, including our own
+            // echoed back and repeats after a rejoin, so it must stay idempotent.
+            if userId != self.myUserId {
+                CallKitManager.shared.handlePeerAccepted(callId: callId)
+            }
+        }
+        socket.on("call:participant-left") { [weak self] data, _ in
+            guard let self,
+                  let dict = data.first as? [String: Any],
+                  let callId = dict["callId"] as? String,
+                  let userId = dict["userId"] as? String else { return }
+            self.lastCallParticipantLeft = CallParticipantEvent(callId: callId, userId: userId)
+        }
         socket.on("call:decline") { data, _ in
             guard let dict = data.first as? [String: Any],
                   let callId = dict["callId"] as? String else { return }
             CallKitManager.shared.handlePeerDeclined(callId: callId)
         }
-        socket.on("call:cancel") { data, _ in
+        socket.on("call:cancel") { [weak self] data, _ in
             guard let dict = data.first as? [String: Any],
                   let callId = dict["callId"] as? String else { return }
             // .unanswered → iOS shows "Missed" instead of "Unavailable" in the system call log.
             CallKitManager.shared.handleRemoteCallEnded(callId: callId, reason: .unanswered)
+            self?.lastCallEnded = CallEndedEvent(callId: callId)
         }
-        socket.on("call:end") { data, _ in
+        socket.on("call:end") { [weak self] data, _ in
             guard let dict = data.first as? [String: Any],
                   let callId = dict["callId"] as? String else { return }
             CallKitManager.shared.handleRemoteCallEnded(callId: callId)
+            self?.lastCallEnded = CallEndedEvent(callId: callId)
         }
         socket.connect()
     }
@@ -183,7 +222,10 @@ private extension SocketService.CallInvite {
             livekitUrl: dict["livekitUrl"] as? String ?? "",
             kind: dict["kind"] as? String ?? "AUDIO",
             fromDisplayName: from?["displayName"] as? String ?? "Unknown",
-            fromUserId: from?["id"] as? String
+            fromUserId: from?["id"] as? String,
+            conversationType: dict["conversationType"] as? String,
+            conversationTitle: dict["conversationTitle"] as? String,
+            participantCount: dict["participantCount"] as? Int
         )
     }
 }

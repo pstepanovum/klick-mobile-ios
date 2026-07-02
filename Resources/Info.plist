@@ -44,6 +44,15 @@
     <key>NSSupportsLiveActivitiesFrequentUpdates</key>
     <true/>
 
+    <!-- SiriKit calling: "call X on Klic", CarPlay Suggestions, Phone-app Recents call-back.
+         The legacy audio/video intents keep older routing paths working. -->
+    <key>NSUserActivityTypes</key>
+    <array>
+        <string>INStartCallIntent</string>
+        <string>INStartAudioCallIntent</string>
+        <string>INStartVideoCallIntent</string>
+    </array>
+
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>

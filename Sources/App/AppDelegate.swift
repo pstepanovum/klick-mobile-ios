@@ -100,7 +100,11 @@ extension AppDelegate: PKPushRegistryDelegate {
             livekitUrl: d["livekitUrl"] as? String ?? "",
             kind: d["kind"] as? String ?? "AUDIO",
             fromDisplayName: d["fromName"] as? String ?? "Incoming call",
-            fromUserId: d["fromUserId"] as? String
+            fromUserId: d["fromUserId"] as? String,
+            conversationType: d["conversationType"] as? String,
+            conversationTitle: d["conversationTitle"] as? String,
+            // Push data values may arrive stringified depending on the transport.
+            participantCount: d["participantCount"] as? Int ?? (d["participantCount"] as? String).flatMap(Int.init)
         )
         MainActor.assumeIsolated {
             guard mustReport else {

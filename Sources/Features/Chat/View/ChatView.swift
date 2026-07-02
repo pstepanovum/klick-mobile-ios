@@ -39,6 +39,9 @@ struct ChatView: View {
     @State var selectedMember: ChatProfileTarget?
     @State var openedConversation: Conversation?
     @State var groupDetails: GroupConversationDetails?
+    /// The conversation's in-progress call (group chats) — drives the "Join call" banner.
+    @State var activeCallInfo: ActiveCallInfo?
+    @ObservedObject var callKit = CallKitManager.shared
     @State var pendingMedia: [PendingMediaDraft] = []
     @State var selectedMediaAttachmentId: String?
     @State var captureMode: MessageComposer.CaptureMode = .audio
@@ -133,6 +136,14 @@ struct ChatView: View {
                     composer
                 }
             }
+            // "Join call" banner: the group has a live call we're not in yet.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if let info = activeCallInfo, callKit.activeCall?.id != info.callId {
+                    JoinCallBanner(info: info) {
+                        Task { await joinActiveCall(info) }
+                    }
+                }
+            }
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(KlicColor.background.ignoresSafeArea())
@@ -141,17 +152,15 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) { chatHeader }
             ToolbarItem(placement: .topBarTrailing) {
-                if isDirect {
-                    HStack(spacing: 20) {
-                        Button { Task { await startCall(kind: "AUDIO") } } label: {
-                            Image(systemName: "phone.fill").font(.system(size: 18))
-                        }
-                        .disabled(isStartingCall)
-                        Button { Task { await startCall(kind: "VIDEO") } } label: {
-                            Image(systemName: "video.fill").font(.system(size: 18))
-                        }
-                        .disabled(isStartingCall)
+                HStack(spacing: 20) {
+                    Button { Task { await startCall(kind: "AUDIO") } } label: {
+                        Image(systemName: "phone.fill").font(.system(size: 18))
                     }
+                    .disabled(isStartingCall)
+                    Button { Task { await startCall(kind: "VIDEO") } } label: {
+                        Image(systemName: "video.fill").font(.system(size: 18))
+                    }
+                    .disabled(isStartingCall)
                 }
             }
         }
@@ -185,7 +194,10 @@ struct ChatView: View {
         .task {
             hiddenIds = Self.loadHidden(conversation.id)
             await load()
-            if !isDirect { await loadGroupDetails() }
+            if !isDirect {
+                await loadGroupDetails()
+                await refreshActiveCall()
+            }
             scrollToBottom(animated: false)
             initialLoadDone = true
         }
@@ -202,6 +214,23 @@ struct ChatView: View {
         }
         .onReceive(socket.$lastRead.compactMap { $0 }) { applyReceipt($0, status: "read") }
         .onReceive(socket.$lastDelivered.compactMap { $0 }) { applyReceipt($0, status: "delivered") }
+        // Keep the "Join call" banner current as the call starts, gains members, or ends.
+        .onReceive(socket.$incomingCall.compactMap { $0 }) { invite in
+            guard invite.conversationId == conversation.id else { return }
+            Task { await refreshActiveCall() }
+        }
+        .onReceive(socket.$lastCallParticipantJoined.compactMap { $0 }) { event in
+            guard activeCallInfo?.callId == event.callId else { return }
+            Task { await refreshActiveCall() }
+        }
+        .onReceive(socket.$lastCallParticipantLeft.compactMap { $0 }) { event in
+            guard activeCallInfo?.callId == event.callId else { return }
+            Task { await refreshActiveCall() }
+        }
+        .onReceive(socket.$lastCallEnded.compactMap { $0 }) { event in
+            guard activeCallInfo?.callId == event.callId else { return }
+            activeCallInfo = nil
+        }
         .onReceive(socket.$lastReaction.compactMap { $0 }) { update in
             guard update.conversationId == conversation.id,
                   let idx = messages.firstIndex(where: { $0.id == update.messageId }) else { return }
@@ -273,4 +302,40 @@ struct ChatProfileTarget: Identifiable, Hashable {
     let username: String
     let displayName: String
     let avatarUrl: String?
+}
+
+/// Banner shown at the top of a group chat while the group has a call in progress
+/// that this user hasn't joined yet.
+private struct JoinCallBanner: View {
+    let info: ActiveCallInfo
+    let onJoin: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: info.kind == "VIDEO" ? "video.fill" : "phone.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(KlicColor.onPrimary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Ongoing call")
+                    .font(KlicFont.headline(14))
+                    .foregroundStyle(KlicColor.onPrimary)
+                Text(info.joinedCount == 1 ? "1 person in the call" : "\(info.joinedCount) people in the call")
+                    .font(KlicFont.caption(12))
+                    .foregroundStyle(KlicColor.onPrimary.opacity(0.85))
+            }
+            Spacer()
+            Button(action: onJoin) {
+                Text("Join")
+                    .font(KlicFont.headline(14))
+                    .foregroundStyle(KlicColor.primary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .background(KlicColor.onPrimary, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(KlicColor.primary)
+    }
 }

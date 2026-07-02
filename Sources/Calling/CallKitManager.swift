@@ -14,10 +14,12 @@ final class CallKitManager: NSObject, ObservableObject {
         let livekitUrl: String
         var token: String
         let kind: String
-        let peerName: String
+        let peerName: String    // display label: peer name, or "<Caller> · <Group title>" for groups
         var peerId: String?
         var peerAvatarUrl: String?
         let isOutgoing: Bool
+        var conversationId: String? = nil
+        var isGroup: Bool = false
         var isVideo: Bool { kind == "VIDEO" }
     }
 
@@ -76,7 +78,8 @@ final class CallKitManager: NSObject, ObservableObject {
         }
         pendingInvites[invite.id] = invite
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: invite.fromDisplayName)
+        // Group invites ring as "<Caller> · <Group title>" so the system UI shows both.
+        update.remoteHandle = CXHandle(type: .generic, value: invite.displayTitle)
         update.hasVideo = invite.kind == "VIDEO"
         provider.reportNewIncomingCall(with: uuid, update: update) { error in
             if let error {
@@ -94,7 +97,14 @@ final class CallKitManager: NSObject, ObservableObject {
 
     // MARK: Outgoing (user taps call)
 
-    func startOutgoing(_ session: CallSession, peerName: String, peerId: String? = nil, peerAvatarUrl: String? = nil) {
+    func startOutgoing(
+        _ session: CallSession,
+        peerName: String,
+        peerId: String? = nil,
+        peerAvatarUrl: String? = nil,
+        conversationId: String? = nil,
+        isGroup: Bool = false
+    ) {
         if activeCall != nil {
             APIClient.mobileDiagnostic(
                 event: "callkit.start.ignored.activeCall",
@@ -109,13 +119,45 @@ final class CallKitManager: NSObject, ObservableObject {
         activeCall = ActiveCall(
             id: session.callId, roomName: session.roomName, livekitUrl: session.livekitUrl,
             token: session.token, kind: session.kind ?? "AUDIO", peerName: peerName,
-            peerId: peerId, peerAvatarUrl: peerAvatarUrl, isOutgoing: true
+            peerId: peerId, peerAvatarUrl: peerAvatarUrl, isOutgoing: true,
+            conversationId: conversationId, isGroup: isGroup
         )
         let handle = CXHandle(type: .generic, value: peerName)
         let action = CXStartCallAction(call: uuid, handle: handle)
         action.isVideo = session.kind == "VIDEO"
         controller.request(CXTransaction(action: action)) { _ in }
         startRingTimeout(callId: session.callId)
+        // Teach Siri/CarPlay Suggestions "call <peer> on Klic" (1:1 only — a group label
+        // can't be resolved back to a contact).
+        if !isGroup { CallIntents.donate(peerName: peerName, peerId: peerId, isVideo: session.kind == "VIDEO") }
+    }
+
+    /// Join a call that's already in progress (the group chat's "Join call" banner). No incoming
+    /// report — the system sees it as an outgoing call (CXStartCallAction, same as startOutgoing)
+    /// so the green pill / Dynamic Island show an active call. No ringback or ring timeout: the
+    /// call is live, we're just late-joining it.
+    func joinOngoing(callId: String, conversationId: String, title: String, kind fallbackKind: String) async {
+        guard activeCall == nil else {
+            APIClient.mobileDiagnostic(event: "callkit.joinOngoing.ignored.activeCall", callId: callId)
+            return
+        }
+        guard let session = try? await APIClient.shared.joinToken(callId: callId) else {
+            APIClient.mobileDiagnostic(event: "callkit.joinOngoing.token.failed", callId: callId)
+            return
+        }
+        let kind = session.kind ?? fallbackKind
+        let uuid = uuid(for: callId)
+        statusText = "Connecting..."
+        activeCall = ActiveCall(
+            id: callId, roomName: session.roomName, livekitUrl: session.livekitUrl,
+            token: session.token, kind: kind, peerName: title,
+            peerId: nil, peerAvatarUrl: nil, isOutgoing: true,
+            conversationId: conversationId, isGroup: true
+        )
+        let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: title))
+        action.isVideo = kind == "VIDEO"
+        try? await controller.request(CXTransaction(action: action))
+        APIClient.mobileDiagnostic(event: "callkit.joinOngoing.start", callId: callId)
     }
 
     // MARK: In-call controls routed through CallKit
@@ -279,6 +321,11 @@ final class CallKitManager: NSObject, ObservableObject {
         }
     }
 
+    /// Whether media was established for the current call. "Reconnecting…" counts: the call WAS
+    /// connected and is only riding out a network blip — ending it then must be a server `end`
+    /// (outcome completed), not a decline/cancel.
+    private var isMediaConnected: Bool { statusText == "Connected" || statusText == "Reconnecting…" }
+
     private func finishCallOnServer(callId: String, wasOutgoing: Bool, wasConnected: Bool) async {
         if wasConnected {
             _ = try? await APIClient.shared.endCall(callId: callId)
@@ -293,7 +340,7 @@ final class CallKitManager: NSObject, ObservableObject {
         guard !finishingCallIds.contains(callId) else { return }
         Ringback.shared.stop()
         let wasOutgoing = activeCall?.id == callId ? activeCall?.isOutgoing == true : false
-        let wasConnected = activeCall?.id == callId && statusText == "Connected"
+        let wasConnected = activeCall?.id == callId && isMediaConnected
         finishingCallIds.insert(callId)
         recentlyEndedCallIds.insert(callId)
         cancelRingTimeout(callId)
@@ -325,7 +372,7 @@ final class CallKitManager: NSObject, ObservableObject {
     /// to reconfigures those itself, so doing it here would race and kill the new call's UI.
     private func endAbandonedCall(_ callId: String) {
         let wasOutgoing = activeCall?.id == callId ? activeCall?.isOutgoing == true : true
-        let wasConnected = activeCall?.id == callId && statusText == "Connected"
+        let wasConnected = activeCall?.id == callId && isMediaConnected
         Ringback.shared.stop()
         recentlyEndedCallIds.insert(callId)
         cancelRingTimeout(callId)
@@ -335,10 +382,14 @@ final class CallKitManager: NSObject, ObservableObject {
         if activeCall?.id == callId { activeCall = nil }
     }
 
+    /// A peer accepted (socket call:accept) or their media joined (call:participant-joined —
+    /// which also fires for repeat joins after a rejoin, so this must stay idempotent). Stops
+    /// the ringback on the first occurrence; never clobbers a live "Reconnecting…" status.
     func handlePeerAccepted(callId: String) {
         guard activeCall?.id == callId else { return }
         Ringback.shared.stop()
         cancelRingTimeout(callId)
+        guard statusText == "Calling..." || statusText == "Connecting..." else { return }
         statusText = "Connected"
         CallActivityController.update(status: "Connected", muted: false, isVideo: activeCall?.isVideo ?? false)
     }
@@ -404,10 +455,19 @@ final class CallKitManager: NSObject, ObservableObject {
         }
     }
 
-    func handleMediaPeerDisconnected(callId: String) {
+    /// A 1:1 peer's 60s reconnect grace window expired — they never came back, the call is
+    /// over. Media was connected, so the server notify is an `end` (outcome completed).
+    func handlePeerGraceExpired(callId: String) {
         guard activeCall?.id == callId else { return }
-        APIClient.mobileDiagnostic(event: "callkit.mediaPeerDisconnected.end", callId: callId)
+        APIClient.mobileDiagnostic(event: "callkit.peerGraceExpired.end", callId: callId)
         finishCall(callId: callId, status: "Ended", notifyServer: true, dismissAfter: 500_000_000)
+    }
+
+    /// The local rejoin loop exhausted its ~60s budget without getting back into the room.
+    func handleRejoinGaveUp(callId: String) {
+        guard activeCall?.id == callId else { return }
+        APIClient.mobileDiagnostic(event: "callkit.rejoinGaveUp.end", callId: callId)
+        finishCall(callId: callId, status: "Call ended", notifyServer: true, dismissAfter: 500_000_000)
     }
 
 }
@@ -419,7 +479,7 @@ extension CallKitManager: CXProviderDelegate {
             Ringback.shared.stop()
             cancelAllRingTimeouts()
             if let call = activeCall {
-                let wasConnected = statusText == "Connected"
+                let wasConnected = isMediaConnected
                 recentlyEndedCallIds.insert(call.id)
                 await finishCallOnServer(callId: call.id, wasOutgoing: call.isOutgoing, wasConnected: wasConnected)
                 clear(call.id)
@@ -458,11 +518,12 @@ extension CallKitManager: CXProviderDelegate {
                 let invite = pendingInvites[callId]
                 let kind = invite?.kind ?? session.kind ?? "AUDIO"
                 let isVideo = kind == "VIDEO"
-                let peerName = invite?.fromDisplayName ?? "Call"
+                let peerName = invite?.displayTitle ?? "Call"
                 activeCall = ActiveCall(
                     id: callId, roomName: session.roomName, livekitUrl: session.livekitUrl,
                     token: session.token, kind: kind, peerName: peerName,
-                    peerId: invite?.fromUserId, peerAvatarUrl: nil, isOutgoing: false
+                    peerId: invite?.fromUserId, peerAvatarUrl: nil, isOutgoing: false,
+                    conversationId: invite?.conversationId, isGroup: invite?.isGroup ?? false
                 )
                 APIClient.mobileDiagnostic(event: "callkit.answer.livekit.start", callId: callId)
                 try await CallService.shared.join(
@@ -483,6 +544,9 @@ extension CallKitManager: CXProviderDelegate {
                 APIClient.mobileDiagnostic(event: "callkit.answer.livekit.ok", callId: callId)
                 CallActivityController.start(peerName: peerName, isVideo: isVideo)
                 CallActivityController.update(status: "Connected", muted: false, isVideo: isVideo)
+                if invite?.isGroup != true {
+                    CallIntents.donate(peerName: peerName, peerId: invite?.fromUserId, isVideo: isVideo)
+                }
             } catch {
                 print("CallKit answer failed for \(callId): \(error)")
                 // If the call was torn down while we were still connecting (caller hung up
@@ -535,8 +599,10 @@ extension CallKitManager: CXProviderDelegate {
             // actually answers (handlePeerAccepted), so the on-screen UI is unaffected.
             provider.reportOutgoingCall(with: action.uuid, connectedAt: Date())
             // We're connected to the room but still waiting for the callee to answer — play the
-            // outgoing ringback until they do (handlePeerAccepted stops it).
+            // outgoing ringback until they do (handlePeerAccepted stops it). A late-join of an
+            // ongoing call ("Connecting...", via joinOngoing) is live immediately: no ringback.
             if statusText == "Calling..." { Ringback.shared.start() }
+            if statusText == "Connecting..." { statusText = "Connected" }
             CallActivityController.start(peerName: call.peerName, isVideo: call.isVideo)
             CallActivityController.update(status: statusText, muted: false, isVideo: call.isVideo)
         }
@@ -555,7 +621,7 @@ extension CallKitManager: CXProviderDelegate {
                 recentlyEndedCallIds.insert(id)
                 if activeCall == nil, pendingInvites[id] != nil {
                     _ = try? await APIClient.shared.declineCall(callId: id)
-                } else if statusText != "Connected" {
+                } else if !isMediaConnected {
                     if activeCall?.id == id && activeCall?.isOutgoing == true {
                         _ = try? await APIClient.shared.cancelCall(callId: id)
                     } else {
