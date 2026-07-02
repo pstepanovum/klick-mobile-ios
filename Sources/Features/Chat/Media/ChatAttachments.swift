@@ -9,6 +9,12 @@ struct MessageAttachmentsView: View {
     var showTime: Bool = false
     var time: String = ""
     var status: String? = nil
+    /// Star indicator (§8.4) shown next to the time/ticks.
+    var starred: Bool = false
+    /// Highlight "@all" mentions in the caption (group chats).
+    var highlightMentions: Bool = false
+    /// Conversation context for the auto-download gate + "Save to Photos" auto-save.
+    var conversationId: String = ""
     var onOpenAttachment: (Attachment) -> Void = { _ in }
     var onLongPress: () -> Void = {}
 
@@ -24,6 +30,9 @@ struct MessageAttachmentsView: View {
                     isMine: isMine,
                     time: time,
                     status: status,
+                    starred: starred,
+                    highlightMentions: highlightMentions,
+                    conversationId: conversationId,
                     onOpen: onOpenAttachment,
                     onLongPress: onLongPress
                 )
@@ -38,18 +47,31 @@ struct MessageAttachmentsView: View {
                         attachment: attachment,
                         isMine: isMine,
                         time: isTimedRow ? time : nil,
-                        status: isTimedRow ? status : nil
+                        status: isTimedRow ? status : nil,
+                        starred: isTimedRow && starred
                     )
                 default:
                     FileAttachmentView(
                         attachment: attachment,
                         isMine: isMine,
                         time: isTimedRow ? time : nil,
-                        status: isTimedRow ? status : nil
+                        status: isTimedRow ? status : nil,
+                        starred: isTimedRow && starred
                     )
                 }
             }
         }
+    }
+}
+
+/// Small star shown on starred bubbles next to the time/ticks.
+struct StarIndicator: View {
+    var onPrimary: Bool = false
+
+    var body: some View {
+        Image(systemName: "star.fill")
+            .font(.system(size: 9))
+            .foregroundStyle(onPrimary ? KlicColor.onPrimary.opacity(0.8) : Color.yellow)
     }
 }
 
@@ -65,6 +87,9 @@ private struct MediaMessageCard: View {
     let isMine: Bool
     let time: String
     let status: String?
+    var starred: Bool = false
+    var highlightMentions: Bool = false
+    var conversationId: String = ""
     let onOpen: (Attachment) -> Void
     var onLongPress: () -> Void = {}
 
@@ -74,14 +99,19 @@ private struct MediaMessageCard: View {
 
     var body: some View {
         if caption.isEmpty {
-            MediaBentoGrid(media: media, width: mediaWidth, cornerRadius: cardRadius, onOpen: onOpen)
-                .overlay(alignment: .bottomTrailing) { overlayPill }
+            MediaBentoGrid(
+                media: media, width: mediaWidth, cornerRadius: cardRadius,
+                conversationId: conversationId, isMine: isMine, onOpen: onOpen
+            )
+            .overlay(alignment: .bottomTrailing) { overlayPill }
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 MediaBentoGrid(
                     media: media,
                     width: mediaWidth - gridInset * 2,
                     cornerRadius: cardRadius - gridInset,
+                    conversationId: conversationId,
+                    isMine: isMine,
                     onOpen: onOpen
                 )
                 .padding(gridInset)
@@ -91,9 +121,12 @@ private struct MediaMessageCard: View {
                         text: caption,
                         font: UIFont(name: "TikTokSans-Regular", size: 16) ?? .systemFont(ofSize: 16),
                         textColor: UIColor(isMine ? KlicColor.onPrimary : KlicColor.textPrimary),
+                        highlightMentions: highlightMentions,
+                        mentionColor: UIColor(isMine ? KlicColor.onPrimary : KlicColor.primary),
                         onLongPress: onLongPress
                     )
                     HStack(spacing: 3) {
+                        if starred { StarIndicator(onPrimary: isMine) }
                         Text(time)
                             .font(KlicFont.caption(11))
                             .foregroundStyle(isMine ? KlicColor.onPrimary.opacity(0.65) : KlicColor.textMuted)
@@ -116,6 +149,7 @@ private struct MediaMessageCard: View {
 
     private var overlayPill: some View {
         HStack(spacing: 3) {
+            if starred { StarIndicator(onPrimary: true) }
             Text(time)
                 .font(KlicFont.caption(11))
                 .foregroundStyle(.white)
@@ -137,6 +171,8 @@ private struct MediaBentoGrid: View {
     let media: [Attachment]
     let width: CGFloat
     var cornerRadius: CGFloat = 16
+    var conversationId: String = ""
+    var isMine: Bool = false
     let onOpen: (Attachment) -> Void
 
     private let spacing: CGFloat = 2
@@ -151,13 +187,13 @@ private struct MediaBentoGrid: View {
         switch media.count {
         case 1:
             let attachment = media[0]
-            MediaTile(attachment: attachment, onTap: { onOpen(attachment) })
+            MediaTile(attachment: attachment, conversationId: conversationId, isMine: isMine, onTap: { onOpen(attachment) })
                 .frame(width: width, height: singleHeight(for: attachment))
         case 2:
             let tile = (width - spacing) / 2
             HStack(spacing: spacing) {
                 ForEach(media) { attachment in
-                    MediaTile(attachment: attachment, onTap: { onOpen(attachment) })
+                    MediaTile(attachment: attachment, conversationId: conversationId, isMine: isMine, onTap: { onOpen(attachment) })
                         .frame(width: tile, height: tile * 1.3)
                 }
             }
@@ -168,11 +204,11 @@ private struct MediaBentoGrid: View {
             let smallWidth = width - spacing - largeWidth
             let smallHeight = (height - spacing) / 2
             HStack(spacing: spacing) {
-                MediaTile(attachment: media[0], onTap: { onOpen(media[0]) })
+                MediaTile(attachment: media[0], conversationId: conversationId, isMine: isMine, onTap: { onOpen(media[0]) })
                     .frame(width: largeWidth, height: height)
                 VStack(spacing: spacing) {
                     ForEach(media[1...]) { attachment in
-                        MediaTile(attachment: attachment, onTap: { onOpen(attachment) })
+                        MediaTile(attachment: attachment, conversationId: conversationId, isMine: isMine, onTap: { onOpen(attachment) })
                             .frame(width: smallWidth, height: smallHeight)
                     }
                 }
@@ -188,7 +224,7 @@ private struct MediaBentoGrid: View {
                         ForEach(0..<2, id: \.self) { col in
                             let index = row * 2 + col
                             let attachment = visible[index]
-                            MediaTile(attachment: attachment, onTap: { onOpen(attachment) })
+                            MediaTile(attachment: attachment, conversationId: conversationId, isMine: isMine, onTap: { onOpen(attachment) })
                                 .frame(width: tile, height: tile)
                                 .overlay {
                                     if index == 3, extra > 0 {
@@ -223,14 +259,26 @@ private struct MediaBentoGrid: View {
 }
 
 /// One media cell in the bento grid: a filled image, or a video placeholder with a play
-/// glyph and duration chip.
+/// glyph and duration chip. Photos honor the auto-download matrix (§8.3): when the
+/// current network disallows photo auto-download and the image isn't cached yet, the
+/// tile shows a placeholder with a manual download button instead of fetching.
 private struct MediaTile: View {
     let attachment: Attachment
+    var conversationId: String = ""
+    var isMine: Bool = false
     let onTap: () -> Void
+
+    private enum LoadState {
+        case idle, loading, loaded(UIImage), blocked, failed
+    }
+
+    @State private var state: LoadState = .idle
 
     var body: some View {
         Group {
             if attachment.isVideo {
+                // Videos never auto-fetch (they stream on demand from the viewer),
+                // so the placeholder-with-tap contract already holds for them.
                 ZStack {
                     Color.black.opacity(0.85)
                     Image(systemName: "play.circle.fill")
@@ -247,24 +295,76 @@ private struct MediaTile: View {
                             .padding(6)
                     }
                 }
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onTap)
             } else {
-                RemoteImage(url: URL(string: attachment.url)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .failure:
-                        KlicColor.surfaceRaised.overlay(
-                            Image(systemName: "photo").foregroundStyle(KlicColor.textMuted)
-                        )
-                    default:
-                        KlicColor.surfaceRaised.overlay(LoadingCircle())
-                    }
-                }
+                imageBody
             }
         }
         .clipped()
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
+    }
+
+    @ViewBuilder private var imageBody: some View {
+        switch state {
+        case .loaded(let image):
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onTap)
+        case .blocked:
+            KlicColor.surfaceRaised
+                .overlay {
+                    VStack(spacing: 6) {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.system(size: 26, weight: .medium))
+                            .foregroundStyle(KlicColor.primary)
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(attachment.byteSize), countStyle: .file))
+                            .font(KlicFont.caption(11))
+                            .foregroundStyle(KlicColor.textMuted)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { Task { await load(force: true) } }
+        case .failed:
+            KlicColor.surfaceRaised
+                .overlay(Image(systemName: "photo").foregroundStyle(KlicColor.textMuted))
+                .contentShape(Rectangle())
+                .onTapGesture { Task { await load(force: true) } }
+        default:
+            KlicColor.surfaceRaised
+                .overlay(LoadingCircle())
+                .task(id: attachment.url) { await load(force: false) }
+        }
+    }
+
+    private func load(force: Bool) async {
+        guard let url = URL(string: attachment.url) else {
+            state = .failed
+            return
+        }
+        // Already cached → always show (no network involved).
+        if let cached = await RemoteImageStore.shared.cachedImage(for: url) {
+            state = .loaded(cached)
+            return
+        }
+        guard force || AutoDownloadPrefs.allowedNow(.photos) else {
+            state = .blocked
+            return
+        }
+        state = .loading
+        guard let image = await RemoteImageStore.shared.image(for: url) else {
+            state = .failed
+            return
+        }
+        state = .loaded(image)
+        // "Save to Photos: Always" — incoming photos save when their bytes arrive.
+        if !conversationId.isEmpty {
+            MediaAutoSaver.autoSave(
+                image: image, attachmentId: attachment.id,
+                conversationId: conversationId, isMine: isMine
+            )
+        }
     }
 
     private func durationText(_ milliseconds: Int) -> String {
@@ -280,6 +380,7 @@ private struct VoiceAttachmentView: View {
     let isMine: Bool
     var time: String? = nil
     var status: String? = nil
+    var starred: Bool = false
 
     @ObservedObject private var player = AudioPlaybackManager.shared
 
@@ -294,7 +395,7 @@ private struct VoiceAttachmentView: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
             HStack(spacing: 10) {
-                Button { player.toggle(id: attachment.id, url: attachment.url) } label: {
+                Button { play() } label: {
                     Image(systemName: playing ? "pause.fill" : "play.fill")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(isMine ? KlicColor.primary : KlicColor.onPrimary)
@@ -317,6 +418,7 @@ private struct VoiceAttachmentView: View {
 
             if let time {
                 HStack(spacing: 3) {
+                    if starred { StarIndicator(onPrimary: isMine) }
                     Text(time)
                         .font(KlicFont.caption(11))
                         .foregroundStyle(isMine ? KlicColor.onPrimary.opacity(0.65) : KlicColor.textMuted)
@@ -329,6 +431,19 @@ private struct VoiceAttachmentView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(isMine ? KlicColor.primary : KlicColor.surfaceRaised, in: RoundedRectangle(cornerRadius: 18))
+        .onAppear {
+            // Auto-download matrix (§8.3): pre-cache voice notes when allowed on this network.
+            if AutoDownloadPrefs.allowedNow(.audio), !AttachmentFileStore.shared.isCached(attachment) {
+                Task { _ = try? await AttachmentFileStore.shared.download(attachment) }
+            }
+        }
+    }
+
+    /// Prefer the cached local file (offline playback) and fall back to streaming —
+    /// tapping play is a manual action, so it works even when auto-download is off.
+    private func play() {
+        let local = AttachmentFileStore.shared.cachedURL(for: attachment)
+        player.toggle(id: attachment.id, url: local?.absoluteString ?? attachment.url)
     }
 
     private var durationText: String {
@@ -348,6 +463,7 @@ private struct FileAttachmentView: View {
     let isMine: Bool
     var time: String? = nil
     var status: String? = nil
+    var starred: Bool = false
 
     @ObservedObject private var store = AttachmentFileStore.shared
     @State private var previewFile: LocalFile?
@@ -389,6 +505,7 @@ private struct FileAttachmentView: View {
                 }
                 if let time {
                     HStack(spacing: 3) {
+                        if starred { StarIndicator(onPrimary: isMine) }
                         Text(time)
                             .font(KlicFont.caption(11))
                             .foregroundStyle(isMine ? KlicColor.onPrimary.opacity(0.65) : KlicColor.textMuted)
@@ -403,6 +520,12 @@ private struct FileAttachmentView: View {
             .background(isMine ? KlicColor.primary : KlicColor.surfaceRaised, in: RoundedRectangle(cornerRadius: 16))
         }
         .disabled(downloadProgress != nil)
+        .onAppear {
+            // Auto-download matrix (§8.3): pre-cache documents when allowed on this network.
+            if AutoDownloadPrefs.allowedNow(.documents), !store.isCached(attachment) {
+                Task { _ = try? await AttachmentFileStore.shared.download(attachment) }
+            }
+        }
         .fullScreenCover(item: $previewFile) { file in
             QuickLookPreview(url: file.url)
                 .ignoresSafeArea()

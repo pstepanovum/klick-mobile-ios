@@ -275,6 +275,10 @@ actor APIClient {
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw APIError.server(message: "Upload failed", status: (resp as? HTTPURLResponse)?.statusCode ?? 0)
         }
+        DataUsageTracker.shared.record(
+            type: DataUsageTracker.mediaType(forContentType: contentType),
+            sent: data.count, received: 0
+        )
     }
 
     /// Step 3: send the message referencing the uploaded object key(s).
@@ -299,6 +303,89 @@ actor APIClient {
         struct R: Decodable { let url: String }
         let r: R = try await get("/attachments/\(id)/url")
         return r.url
+    }
+
+    /// Cursor-paginated page shape shared by the new §8.2 list endpoints.
+    struct Page<Item: Decodable>: Decodable {
+        let items: [Item]
+        let nextCursor: String?
+    }
+
+    /// All of a conversation's attachments, newest-first (drives "Media, links, docs").
+    func conversationAttachments(
+        conversationId: String, kind: String? = nil, cursor: String? = nil, limit: Int = 60
+    ) async throws -> Page<ConversationAttachment> {
+        var path = "/conversations/\(conversationId)/attachments?limit=\(limit)"
+        if let kind { path += "&kind=\(kind)" }
+        if let cursor, let encoded = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "&cursor=\(encoded)"
+        }
+        return try await get(path)
+    }
+
+    // MARK: - Notification & conversation prefs, stars (CALLS.md §8.2)
+
+    func notificationPrefs() async throws -> NotificationPrefs {
+        try await get("/me/notification-prefs")
+    }
+
+    /// Partial update — only the provided toggles are sent.
+    @discardableResult
+    func updateNotificationPrefs(
+        messages: Bool? = nil, groups: Bool? = nil, calls: Bool? = nil, friendRequests: Bool? = nil
+    ) async throws -> NotificationPrefs {
+        var body: [String: Any] = [:]
+        if let messages { body["messages"] = messages }
+        if let groups { body["groups"] = groups }
+        if let calls { body["calls"] = calls }
+        if let friendRequests { body["friendRequests"] = friendRequests }
+        return try await put("/me/notification-prefs", body: body)
+    }
+
+    func resetNotificationPrefs() async throws {
+        let _: EmptyResponse = try await delete("/me/notification-prefs")
+    }
+
+    func conversationPrefs(conversationId: String) async throws -> ConversationPrefs {
+        try await get("/conversations/\(conversationId)/prefs")
+    }
+
+    /// Partial update; a double-optional set to `.some(nil)` sends an explicit null (unmute).
+    @discardableResult
+    func updateConversationPrefs(
+        conversationId: String,
+        messagesMutedUntil: String?? = nil,
+        muteMentions: Bool? = nil,
+        callsMutedUntil: String?? = nil
+    ) async throws -> ConversationPrefs {
+        var body: [String: Any] = [:]
+        if let value = messagesMutedUntil { body["messagesMutedUntil"] = value ?? NSNull() }
+        if let muteMentions { body["muteMentions"] = muteMentions }
+        if let value = callsMutedUntil { body["callsMutedUntil"] = value ?? NSNull() }
+        return try await put("/conversations/\(conversationId)/prefs", body: body)
+    }
+
+    /// Both star routes answer 204 with no body — send a body-less request (no
+    /// Content-Type header), same as the other empty-payload routes.
+    func starMessage(id: String) async throws {
+        let _: EmptyResponse = try await request("/messages/\(id)/star", method: "POST", body: nil, authed: true)
+    }
+
+    func unstarMessage(id: String) async throws {
+        let _: EmptyResponse = try await delete("/messages/\(id)/star")
+    }
+
+    /// Starred messages (same payload shape as GET messages), optionally scoped to one chat.
+    func starredMessages(
+        conversationId: String? = nil, cursor: String? = nil, limit: Int = 50
+    ) async throws -> (items: [Message], nextCursor: String?) {
+        var path = "/me/starred?limit=\(limit)"
+        if let conversationId { path += "&conversationId=\(conversationId)" }
+        if let cursor, let encoded = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            path += "&cursor=\(encoded)"
+        }
+        let page: Page<Message> = try await get(path)
+        return (await E2eeMessaging.shared.materializeAll(page.items), page.nextCursor)
     }
 
     // MARK: - E2EE key distribution (E2EE.md §6.2)
@@ -352,6 +439,11 @@ actor APIClient {
         return try await request(path, method: "PUT", body: data, authed: true)
     }
 
+    private func put<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
+        let data = try JSONSerialization.data(withJSONObject: body)
+        return try await request(path, method: "PUT", body: data, authed: true)
+    }
+
     private func patch<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {
         let data = try JSONSerialization.data(withJSONObject: body)
         return try await request(path, method: "PATCH", body: data, authed: true)
@@ -379,12 +471,22 @@ actor APIClient {
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.httpBody = body
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Only bodied requests declare a JSON payload — a Content-Type header on an
+        // empty-body POST/DELETE makes the server try (and fail) to parse a body.
+        if body != nil {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         if authed, let token = await validAccessToken() {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
         let (respData, resp) = try await session.data(for: req)
+        // Data-usage accounting (§8.3): API traffic counts as "other", call signaling as "calls".
+        DataUsageTracker.shared.record(
+            type: path.hasPrefix("/calls") ? .calls : .other,
+            sent: body?.count ?? 0,
+            received: respData.count
+        )
         guard let http = resp as? HTTPURLResponse else { throw APIError.noData }
         if authed, http.statusCode == 401, !hasRetriedAuth, await refreshAccessToken() {
             return try await request(

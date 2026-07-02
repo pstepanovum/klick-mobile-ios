@@ -48,6 +48,7 @@ struct GroupConversationDetails: Codable, Identifiable, Hashable {
     let description: String?
     var avatarUrl: String?
     let createdById: String?
+    var createdAt: String?      // exposed by newer servers — drives the "Created" footer
     let isAdmin: Bool
     let members: [Member]
 
@@ -135,6 +136,7 @@ struct Message: Codable, Identifiable, Hashable {
     var replyTo: ReplyPreview?   // the quoted message, when this is a reply
     var reactions: [Reaction] = []
     var deletedAt: String?       // set when deleted for everyone
+    var starred: Bool?           // whether *I* starred this message (per-requester)
     // CIPHERTEXT messages (E2EE): sender's protocol device + the envelopes
     // addressed to this user's devices (this client picks its own by deviceId).
     var senderDeviceId: Int?
@@ -147,7 +149,7 @@ struct Message: Codable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case id, conversationId, senderId, body, kind, createdAt, attachments, status
-        case stickerId, stickerUrl, call, replyTo, reactions, deletedAt
+        case stickerId, stickerUrl, call, replyTo, reactions, deletedAt, starred
         case senderDeviceId, envelopes
     }
 
@@ -168,6 +170,7 @@ struct Message: Codable, Identifiable, Hashable {
         replyTo = try? c.decode(ReplyPreview.self, forKey: .replyTo)
         reactions = (try? c.decode([Reaction].self, forKey: .reactions)) ?? []
         deletedAt = try? c.decode(String.self, forKey: .deletedAt)
+        starred = try? c.decode(Bool.self, forKey: .starred)
         senderDeviceId = try? c.decode(Int.self, forKey: .senderDeviceId)
         envelopes = try? c.decode([MessageEnvelope].self, forKey: .envelopes)
     }
@@ -177,12 +180,13 @@ struct Message: Codable, Identifiable, Hashable {
          kind: String, createdAt: String, attachments: [Attachment] = [], status: String? = nil,
          stickerId: String? = nil, stickerUrl: String? = nil, call: CallEvent? = nil,
          replyTo: ReplyPreview? = nil, reactions: [Reaction] = [], deletedAt: String? = nil,
-         senderDeviceId: Int? = nil, envelopes: [MessageEnvelope]? = nil) {
+         starred: Bool? = nil, senderDeviceId: Int? = nil, envelopes: [MessageEnvelope]? = nil) {
         self.id = id; self.conversationId = conversationId; self.senderId = senderId
         self.body = body; self.kind = kind; self.createdAt = createdAt
         self.attachments = attachments; self.status = status
         self.stickerId = stickerId; self.stickerUrl = stickerUrl; self.call = call
         self.replyTo = replyTo; self.reactions = reactions; self.deletedAt = deletedAt
+        self.starred = starred
         self.senderDeviceId = senderDeviceId; self.envelopes = envelopes
     }
 }
@@ -264,6 +268,50 @@ struct ActiveCallInfo: Codable, Identifiable {
     struct Participant: Codable {
         let userId: String
         let joinedAt: String?
+    }
+}
+
+// MARK: - Notification / conversation prefs (CALLS.md §8.2)
+
+/// Global per-user push toggles (GET/PUT /me/notification-prefs). Defaults are all-on.
+struct NotificationPrefs: Codable, Equatable {
+    var messages: Bool
+    var groups: Bool
+    var calls: Bool
+    var friendRequests: Bool
+
+    static let defaults = NotificationPrefs(messages: true, groups: true, calls: true, friendRequests: true)
+}
+
+/// Per-conversation mute state (GET/PUT /conversations/:id/prefs).
+/// ISO date strings or nil; "Always" muted = 9999-12-31T00:00:00Z.
+struct ConversationPrefs: Codable, Equatable {
+    var messagesMutedUntil: String?
+    var muteMentions: Bool?
+    var callsMutedUntil: String?
+}
+
+/// One row from GET /conversations/:id/attachments — attachment fields plus the
+/// message context needed by the "Media, links, docs" browser.
+struct ConversationAttachment: Codable, Identifiable, Hashable {
+    let id: String
+    let kind: String            // "IMAGE" | "VOICE" | "VIDEO" | "FILE"
+    let url: String
+    let contentType: String
+    let byteSize: Int
+    var width: Int?
+    var height: Int?
+    var durationMs: Int?
+    var fileName: String?
+    let messageId: String
+    let senderId: String
+    let createdAt: String
+
+    var asAttachment: Attachment {
+        Attachment(
+            id: id, kind: kind, url: url, contentType: contentType, byteSize: byteSize,
+            width: width, height: height, durationMs: durationMs, waveform: nil, fileName: fileName
+        )
     }
 }
 

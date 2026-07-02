@@ -8,7 +8,15 @@ struct RichMessageText: UIViewRepresentable {
     let text: String
     let font: UIFont
     let textColor: UIColor
+    /// Render "@all" mentions with an accent tint (group bubbles; CALLS.md §8.4).
+    var highlightMentions: Bool = false
+    var mentionColor: UIColor = .systemRed
     var onLongPress: () -> Void = {}
+
+    /// Same detection the server's push gate uses: /(^|\s)@all\b/i.
+    static let mentionsAllRegex = try? NSRegularExpression(
+        pattern: "(^|\\s)(@all)\\b", options: [.caseInsensitive]
+    )
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
@@ -34,14 +42,48 @@ struct RichMessageText: UIViewRepresentable {
 
     func updateUIView(_ uiView: UITextView, context: Context) {
         context.coordinator.onLongPress = onLongPress
-        if uiView.text != text { uiView.text = text }
-        uiView.font = font
-        uiView.textColor = textColor
+        if let highlighted = mentionAttributedText() {
+            // Don't reassign font/textColor afterwards — that would flatten the
+            // attribute runs back to a single style.
+            if uiView.attributedText?.string != text {
+                uiView.attributedText = highlighted
+            }
+        } else {
+            if uiView.text != text { uiView.text = text }
+            uiView.font = font
+            uiView.textColor = textColor
+        }
         uiView.tintColor = textColor
         uiView.linkTextAttributes = [
             .foregroundColor: textColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue
         ]
+    }
+
+    /// Attributed body with "@all" runs tinted + bolded — nil when highlighting is
+    /// off or the text has no mention (keeps the cheap plain-text path).
+    private func mentionAttributedText() -> NSAttributedString? {
+        guard highlightMentions,
+              let regex = Self.mentionsAllRegex else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        let matches = regex.matches(in: text, range: range)
+        guard !matches.isEmpty else { return nil }
+        let attributed = NSMutableAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: textColor,
+        ])
+        let boldFont = UIFont(
+            descriptor: font.fontDescriptor.withSymbolicTraits(.traitBold) ?? font.fontDescriptor,
+            size: font.pointSize
+        )
+        for match in matches {
+            let mentionRange = match.range(at: 2)
+            attributed.addAttributes([
+                .foregroundColor: mentionColor,
+                .font: boldFont,
+            ], range: mentionRange)
+        }
+        return attributed
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {

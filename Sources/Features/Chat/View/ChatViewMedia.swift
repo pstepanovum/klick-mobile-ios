@@ -17,7 +17,11 @@ extension ChatView {
 
     @MainActor
     func stageImage(_ image: UIImage) async {
-        guard let (data, w, h) = Media.encodeImage(image) else { return }
+        // Upload quality (§8.3): HD keeps more pixels + lighter compression.
+        let quality = UploadQuality.current
+        guard let (data, w, h) = Media.encodeImage(
+            image, maxDimension: quality.imageMaxDimension, quality: quality.imageJpegQuality
+        ) else { return }
         pendingMedia.append(
             PendingMediaDraft(
                 kind: "IMAGE",
@@ -61,7 +65,10 @@ extension ChatView {
     }
 
     private func sendImage(_ image: UIImage) async {
-        guard let (data, w, h) = Media.encodeImage(image) else { return }
+        let quality = UploadQuality.current
+        guard let (data, w, h) = Media.encodeImage(
+            image, maxDimension: quality.imageMaxDimension, quality: quality.imageJpegQuality
+        ) else { return }
         await sendAttachment(kind: "IMAGE", contentType: "image/jpeg", data: data, width: w, height: h)
     }
 

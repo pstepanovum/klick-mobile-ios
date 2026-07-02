@@ -15,6 +15,9 @@ struct SettingsView: View {
                     // My Profile + Appearance
                     mainSection
 
+                    // Notifications + Data and Storage (CALLS.md §8.3/§8.5)
+                    dataSection
+
                     // Updates — own card, visually separated
                     updatesSection
 
@@ -78,6 +81,25 @@ struct SettingsView: View {
 
             NavigationLink { AppearanceView() } label: {
                 SettingsRow(icon: "sun.max", title: "Appearance")
+            }
+            .buttonStyle(.plain)
+        }
+        .background(KlicColor.surface, in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    // MARK: Notifications + Data and Storage
+
+    private var dataSection: some View {
+        VStack(spacing: 0) {
+            NavigationLink { NotificationsSettingsView() } label: {
+                SettingsRow(icon: "bell", title: "Notifications")
+            }
+            .buttonStyle(.plain)
+
+            Divider().padding(.leading, 64).opacity(0.4)
+
+            NavigationLink { DataStorageView() } label: {
+                SettingsRow(icon: "externaldrive", title: "Data and Storage")
             }
             .buttonStyle(.plain)
         }

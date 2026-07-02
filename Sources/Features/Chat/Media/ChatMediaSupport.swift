@@ -85,8 +85,11 @@ struct CameraPicker: UIViewControllerRepresentable {
         case .video:
             picker.mediaTypes = [UTType.movie.identifier]
             picker.cameraCaptureMode = .video
-            picker.videoQuality = .typeMedium
-            picker.videoExportPreset = AVAssetExportPresetMediumQuality
+            // Upload quality (§8.3): HD records/exports at high quality; Standard
+            // keeps the previous medium-quality pipeline.
+            let hd = UploadQuality.current == .hd
+            picker.videoQuality = hd ? .typeHigh : .typeMedium
+            picker.videoExportPreset = hd ? AVAssetExportPresetHighestQuality : AVAssetExportPresetMediumQuality
             picker.videoMaximumDuration = 60
         }
         picker.delegate = context.coordinator

@@ -46,6 +46,9 @@ struct ChatView: View {
     @State var selectedMediaAttachmentId: String?
     @State var captureMode: MessageComposer.CaptureMode = .audio
     @State var cameraMode: CameraPicker.Mode = .photo
+    // Message search (group info → Search; §8.4).
+    @State var showMessageSearch = false
+    @State var pendingSearchJump: String?
 
     enum AttachAction { case photos, camera, file }
     @State var pendingAttach: AttachAction?
@@ -176,11 +179,27 @@ struct ChatView: View {
                     },
                     onReply: { replyingTo = target; isComposerFocused = true },
                     onCopy: { UIPasteboard.general.string = target.body },
+                    onToggleStar: { Task { await toggleStar(target) } },
                     onDelete: { deleteTarget = target },
                     onDismiss: { withAnimation(.easeOut(duration: 0.15)) { menuTarget = nil } }
                 )
                 .transition(.opacity)
             }
+        }
+        .sheet(isPresented: $showMessageSearch, onDismiss: {
+            if let target = pendingSearchJump {
+                pendingSearchJump = nil
+                Task { await jumpToMessage(target) }
+            }
+        }) {
+            MessageSearchSheet(
+                messages: messages,
+                hasMore: hasMore,
+                isLoadingMore: isLoadingMore,
+                senderName: { senderDisplayName(for: $0) },
+                onLoadMore: { Task { await loadMore() } },
+                onSelect: { pendingSearchJump = $0 }
+            )
         }
         .confirmationDialog("Delete message", isPresented: deleteDialogBinding, titleVisibility: .visible) {
             Button("Delete for me", role: .destructive) { if let m = deleteTarget { deleteForMe(m) }; dismissMenu() }
@@ -207,8 +226,14 @@ struct ChatView: View {
         .onReceive(socket.$lastMessage.compactMap { $0 }) { msg in
             guard msg.conversationId == conversation.id else { return }
             // Upsert by id — the server echoes our own sends back for multi-device sync.
-            if let idx = messages.firstIndex(where: { $0.id == msg.id }) { messages[idx] = msg }
-            else { messages.append(msg) }
+            if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
+                var updated = msg
+                // Socket fan-out is per-conversation, not per-requester — keep my star.
+                updated.starred = updated.starred ?? messages[idx].starred
+                messages[idx] = updated
+            } else {
+                messages.append(msg)
+            }
             markRead()
             scrollToBottom()
         }

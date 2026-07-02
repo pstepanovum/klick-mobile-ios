@@ -13,11 +13,44 @@ final class AttachmentFileStore: ObservableObject {
 
     private var inFlight: [String: Task<URL, Error>] = [:]
 
-    private static var directory: URL {
+    nonisolated static var directory: URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Attachments", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// Whether an attachment's bytes are already cached locally.
+    func isCached(_ attachment: Attachment) -> Bool {
+        FileManager.default.fileExists(atPath: localURL(for: attachment).path)
+    }
+
+    /// The cached file's URL when present (nil when not yet downloaded).
+    func cachedURL(for attachment: Attachment) -> URL? {
+        let url = localURL(for: attachment)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// On-disk size of one cached attachment (0 when absent) — drives "Manage storage".
+    nonisolated static func cachedBytes(attachmentId: String) -> Int64 {
+        directorySize(directory.appendingPathComponent(attachmentId, isDirectory: true))
+    }
+
+    nonisolated static func removeCached(attachmentId: String) {
+        try? FileManager.default.removeItem(
+            at: directory.appendingPathComponent(attachmentId, isDirectory: true))
+    }
+
+    nonisolated static func directorySize(_ url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in enumerator {
+            let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            if values?.isRegularFile == true { total += Int64(values?.fileSize ?? 0) }
+        }
+        return total
     }
 
     /// Local cache location for an attachment. The original file name is kept as the
@@ -71,6 +104,10 @@ final class AttachmentFileStore: ObservableObject {
                 withIntermediateDirectories: true
             )
             try data.write(to: destination, options: .atomic)
+            DataUsageTracker.shared.record(
+                type: DataUsageTracker.mediaType(forAttachmentKind: attachment.kind),
+                sent: 0, received: data.count
+            )
             return destination
         }
         inFlight[attachment.id] = task

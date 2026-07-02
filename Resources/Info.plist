@@ -30,6 +30,8 @@
     <string>Klic uses your contacts to help you find friends already on the app.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Klic uses your microphone for voice and video calls.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>Klic saves photos and videos from chats to your library when you turn on “Save to Photos”.</string>
 
     <key>UIBackgroundModes</key>
     <array>

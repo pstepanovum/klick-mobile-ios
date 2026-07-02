@@ -25,6 +25,34 @@ extension ChatView {
         Self.saveHidden(hiddenIds, conversation.id)
     }
 
+    /// Star/unstar a message (POST/DELETE /messages/:id/star) with an optimistic
+    /// local flip; try? so an undeployed server just leaves the local state.
+    func toggleStar(_ message: Message) async {
+        let newValue = !(message.starred ?? false)
+        if let idx = messages.firstIndex(where: { $0.id == message.id }) {
+            messages[idx].starred = newValue
+        }
+        if newValue {
+            try? await APIClient.shared.starMessage(id: message.id)
+        } else {
+            try? await APIClient.shared.unstarMessage(id: message.id)
+        }
+    }
+
+    /// Ensure a message is loaded (fetch-back pagination), then scroll to it.
+    func jumpToMessage(_ id: String) async {
+        var attempts = 0
+        while !messages.contains(where: { $0.id == id }), hasMore, attempts < 20 {
+            attempts += 1
+            await loadMore()
+        }
+        guard messages.contains(where: { $0.id == id }) else { return }
+        try? await Task.sleep(nanoseconds: 150_000_000)   // let the list settle
+        withAnimation(.easeOut(duration: 0.25)) {
+            scrollProxy?.scrollTo(id, anchor: .center)
+        }
+    }
+
     func deleteEveryone(_ message: Message) async {
         try? await APIClient.shared.deleteForEveryone(conversationId: conversation.id, messageId: message.id)
         if let idx = messages.firstIndex(where: { $0.id == message.id }) {

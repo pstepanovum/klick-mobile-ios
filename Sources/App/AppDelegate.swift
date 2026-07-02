@@ -142,10 +142,25 @@ extension AppDelegate: PKPushRegistryDelegate {
 // MARK: - Foreground message banners
 
 extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Foreground banner/sound path honors the notification prefs (CALLS.md §8.4):
+    /// per-chat mutes suppress the banner entirely; a per-chat alert tone replaces
+    /// the system sound. (The delivered push's own sound stays "default" — APNs
+    /// sound is chosen server-side, so per-chat tones apply in-app only.)
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        let userInfo = notification.request.content.userInfo
+        guard let conversationId = userInfo["conversationId"] as? String else {
+            return [.banner, .sound]
+        }
+        if ChatLocalPrefs.messagesMuted(conversationId) {
+            return []
+        }
+        if let tone = ChatLocalPrefs.alertTone(conversationId) {
+            KlicTone.play(file: tone)
+            return [.banner]
+        }
+        return [.banner, .sound]
     }
 }
