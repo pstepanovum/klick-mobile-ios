@@ -131,7 +131,11 @@ build_ios() {
     else
       echo "xcodegen not found — skipping project regeneration (xcodeproj must already be up to date)" >&2
     fi
-  )
+    # xcodegen rewrites the pbxproj, which drops CocoaPods integration — reinstall.
+    if [ -f Podfile ]; then
+      pod install 1>&2
+    fi
+  ) || { echo "ERROR: project generation failed" >&2; exit 1; }
 
   local archive_path="/tmp/klic-${version}.xcarchive"
   local ipa_path="$dir/klic-ios-${version}.ipa"
@@ -139,7 +143,15 @@ build_ios() {
 
   (
     cd "$dir"
+    # CocoaPods projects must build via the workspace. (Plain string, not an
+    # array: empty-array expansion breaks under set -u on macOS bash 3.2.)
+    workspace_flag=""
+    if [ -d "Klic.xcworkspace" ]; then
+      workspace_flag="-workspace Klic.xcworkspace"
+    fi
+    # shellcheck disable=SC2086
     xcodebuild archive \
+      $workspace_flag \
       -scheme Klic \
       -sdk iphoneos \
       -configuration Release \

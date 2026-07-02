@@ -21,6 +21,9 @@ packages:
 
 settings:
   base:
+    # CocoaPods script phases (embed frameworks, libsignal FFI download) need
+    # file access that Xcode's user-script sandboxing denies.
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
     MARKETING_VERSION: "0.4.5"
     CURRENT_PROJECT_VERSION: "37"
     SWIFT_VERSION: "5.0"
@@ -37,9 +40,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.klic.mobile.app
         INFOPLIST_FILE: Resources/Info.plist
+        # LibSignalClient's public interface references its C FFI module; the app
+        # target must be able to resolve it too (the podspec only sets this on
+        # the pod target).
+        SWIFT_INCLUDE_PATHS: "$(inherited) $(PODS_ROOT)/LibSignalClient/swift/Sources/SignalFfi"
         CODE_SIGN_ENTITLEMENTS: Resources/Klic.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        # NO: CocoaPods script phases (embed frameworks, libsignal FFI download)
+        # need file access that Xcode's user-script sandboxing denies.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
     dependencies:
       - package: LiveKit
       - package: SocketIO

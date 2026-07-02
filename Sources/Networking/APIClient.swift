@@ -276,6 +276,24 @@ actor APIClient {
         return r.url
     }
 
+    // MARK: - E2EE key distribution (E2EE.md §6.2)
+
+    func publishKeys(_ body: PublishKeysRequest) async throws -> PublishKeysResponse {
+        try await put("/keys", encodable: body)
+    }
+
+    func preKeyCount(installId: String) async throws -> PreKeyCountResponse {
+        try await get("/keys/count?installId=\(installId)")
+    }
+
+    func topUpPreKeys(_ body: TopUpPreKeysRequest) async throws -> EmptyResponse {
+        try await post("/keys/prekeys", encodable: body)
+    }
+
+    func rotateSignedPreKey(_ body: RotateSignedPreKeyRequest) async throws -> EmptyResponse {
+        try await put("/keys/signed-prekey", encodable: body)
+    }
+
     // MARK: - Core
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
@@ -290,6 +308,11 @@ actor APIClient {
     private func post<T: Decodable, Body: Encodable>(_ path: String, encodable body: Body, authed: Bool = true) async throws -> T {
         let data = try JSONEncoder().encode(body)
         return try await request(path, method: "POST", body: data, authed: authed)
+    }
+
+    private func put<T: Decodable, Body: Encodable>(_ path: String, encodable body: Body) async throws -> T {
+        let data = try JSONEncoder().encode(body)
+        return try await request(path, method: "PUT", body: data, authed: true)
     }
 
     private func patch<T: Decodable>(_ path: String, body: [String: Any]) async throws -> T {

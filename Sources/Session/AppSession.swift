@@ -38,6 +38,8 @@ final class AppSession: ObservableObject {
             if currentUser == nil { currentUser = Self.loadUser() }
             SocketService.shared.connect()
             DeviceRegistrar.sync()
+            // E2EE: publish/refresh this install's key bundle (generates keys on first run).
+            Task { await E2eeKeyManager.shared.ensureReady() }
         }
     }
 
@@ -72,6 +74,7 @@ final class AppSession: ObservableObject {
             currentUser = res.user
             SocketService.shared.connect()
             DeviceRegistrar.sync()
+            Task { await E2eeKeyManager.shared.ensureReady() }
             errorMessage = nil
         } catch let error as APIError {
             errorMessage = error.userMessage
