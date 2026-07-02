@@ -3,7 +3,7 @@ import Security
 
 /// Stores access + refresh tokens in the Keychain.
 enum TokenStore {
-    private static let service = "com.klicmobile.app.tokens"
+    private static let service = "com.klic.mobile.app.tokens"
     private static let accessKey = "access"
     private static let refreshKey = "refresh"
 
