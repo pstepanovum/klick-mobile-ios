@@ -55,6 +55,7 @@ targets:
       - package: Lottie
       - package: Inject
       - target: KlicWidgets
+      - target: KlicShare
 
   KlicWidgets:
     type: app-extension
@@ -66,6 +67,24 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.klic.mobile.app.widgets
         INFOPLIST_FILE: Widget/Info.plist
+
+  # Share-sheet target ("Share to" panel). Compiles only the minimal shared sources it
+  # needs (TokenStore/AppConfig/KlicColor) — NOT the full APIClient, which would drag in
+  # the E2EE/libsignal stack; networking lives in ShareExtension/ShareAPI.swift.
+  KlicShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ShareExtension
+      - path: Sources/Networking/TokenStore.swift
+      - path: Sources/App/AppConfig.swift
+      - path: Sources/DesignSystem/KlicColor.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.klic.mobile.app.share
+        INFOPLIST_FILE: ShareExtension/Info.plist
+        # App group = shared keychain access group; how the extension reads the tokens.
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/KlicShare.entitlements
 
 # Explicit shared scheme so `xcodegen generate` always emits it. Without this, a malformed-project
 # warning (the Sources/Shared vs on-disk Sources/shared case collision) intermittently left the

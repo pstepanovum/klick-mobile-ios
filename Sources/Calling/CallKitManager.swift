@@ -24,7 +24,23 @@ final class CallKitManager: NSObject, ObservableObject {
     }
 
     /// When set, the app shows the in-call screen.
-    @Published var activeCall: ActiveCall?
+    @Published var activeCall: ActiveCall? {
+        didSet {
+            // Switching to a different call (or ending this one) always exits the
+            // minimized state and restarts the connected-timer baseline. In-place
+            // reassignments of the same call keep both.
+            guard activeCall?.id != oldValue?.id else { return }
+            callMinimized = false
+            connectedAt = nil
+        }
+    }
+    /// True while the in-call screen is collapsed into the floating root overlay so the
+    /// user can browse the app mid-call. UI-only: the CallKit call and the LiveKit room
+    /// are untouched; RootView derives the fullScreenCover's item from this flag.
+    @Published var callMinimized = false
+    /// When media first connected for the current call — drives the minimized pill's
+    /// live timer. Reset whenever the active call changes.
+    @Published private(set) var connectedAt: Date?
     @Published var statusText = "Calling..."
 
     private let provider: CXProvider
@@ -321,6 +337,12 @@ final class CallKitManager: NSObject, ObservableObject {
         }
     }
 
+    /// Record when the call's media first connected (idempotent — reconnects keep the
+    /// original baseline so the minimized pill's timer doesn't restart).
+    private func markConnected() {
+        if connectedAt == nil { connectedAt = Date() }
+    }
+
     /// Whether media was established for the current call. "Reconnecting…" counts: the call WAS
     /// connected and is only riding out a network blip — ending it then must be a server `end`
     /// (outcome completed), not a decline/cancel.
@@ -401,6 +423,7 @@ final class CallKitManager: NSObject, ObservableObject {
         cancelRingTimeout(callId)
         guard statusText == "Calling..." || statusText == "Connecting..." else { return }
         statusText = "Connected"
+        markConnected()
         CallActivityController.update(status: "Connected", muted: false, isVideo: activeCall?.isVideo ?? false)
     }
 
@@ -551,6 +574,7 @@ extension CallKitManager: CXProviderDelegate {
                 }
                 _ = try await APIClient.shared.mediaJoined(callId: callId)
                 statusText = "Connected"
+                markConnected()
                 APIClient.mobileDiagnostic(event: "callkit.answer.livekit.ok", callId: callId)
                 CallActivityController.start(peerName: peerName, isVideo: isVideo)
                 CallActivityController.update(status: "Connected", muted: false, isVideo: isVideo)
@@ -612,7 +636,7 @@ extension CallKitManager: CXProviderDelegate {
             // outgoing ringback until they do (handlePeerAccepted stops it). A late-join of an
             // ongoing call ("Connecting...", via joinOngoing) is live immediately: no ringback.
             if statusText == "Calling..." { Ringback.shared.start() }
-            if statusText == "Connecting..." { statusText = "Connected" }
+            if statusText == "Connecting..." { statusText = "Connected"; markConnected() }
             CallActivityController.start(peerName: call.peerName, isVideo: call.isVideo)
             CallActivityController.update(status: statusText, muted: false, isVideo: call.isVideo)
         }

@@ -27,6 +27,9 @@ final class AppSession: ObservableObject {
     /// the session on a transient failure — that's what kept logging users out.
     func bootstrap() {
         guard TokenStore.hasSession else { return }
+        // Older installs hold tokens in the app-private keychain; move them into the
+        // shared access group so the share extension can authenticate too.
+        TokenStore.migrateToSharedGroupIfNeeded()
         Task {
             // Refresh up front only when the access token is missing/expired — no
             // gratuitous rotation (and no race) on every relaunch.

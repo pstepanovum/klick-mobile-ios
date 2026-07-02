@@ -7,6 +7,14 @@ enum TokenStore {
     private static let accessKey = "access"
     private static let refreshKey = "refresh"
 
+    /// App-group keychain access group shared with the KlicShare extension (an app group
+    /// listed in com.apple.security.application-groups is automatically a keychain access
+    /// group on iOS). Writing tokens into it is what lets the share extension authenticate.
+    /// Re-signed builds (AltStore) can lose the app-group entitlement, so every write falls
+    /// back to the app's private keychain when the group is unavailable — the app keeps
+    /// working and only the extension degrades (it shows "Open Klic and sign in first").
+    static let sharedAccessGroup = "group.com.klic.mobile.app"
+
     static var accessToken: String? { read(accessKey) }
     static var refreshToken: String? { read(refreshKey) }
 
@@ -23,11 +31,32 @@ enum TokenStore {
         delete(refreshKey)
     }
 
+    /// Move tokens written before keychain sharing existed (app-private access group) into
+    /// the shared group so the share extension can read them. No-op once migrated, or when
+    /// the app-group entitlement is unavailable (re-signed build) — write() falls back.
+    static func migrateToSharedGroupIfNeeded() {
+        for key in [accessKey, refreshKey] {
+            guard let value = read(key), !isInSharedGroup(key) else { continue }
+            write(key, value)
+        }
+    }
+
+    private static func isInSharedGroup(_ key: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecAttrAccessGroup as String: sharedAccessGroup,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+    }
+
     // MARK: - Keychain primitives
 
     private static func write(_ key: String, _ value: String) {
         delete(key)
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
@@ -37,10 +66,20 @@ enum TokenStore {
             // ThisDeviceOnly: tokens never leave in backups/transfers — a restored
             // install re-authenticates instead of inheriting another device's session.
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            // Shared with the KlicShare extension via the app group.
+            kSecAttrAccessGroup as String: sharedAccessGroup,
         ]
-        SecItemAdd(query as CFDictionary, nil)
+        if SecItemAdd(query as CFDictionary, nil) != errSecSuccess {
+            // errSecMissingEntitlement on builds re-signed without the app group
+            // (AltStore) — fall back to the app-private keychain so sign-in still works.
+            query.removeValue(forKey: kSecAttrAccessGroup as String)
+            SecItemAdd(query as CFDictionary, nil)
+        }
     }
 
+    // Reads and deletes deliberately omit kSecAttrAccessGroup: without it the query spans
+    // every access group this process can reach (private + shared), so both pre-migration
+    // and shared-group tokens are found, from the app and the extension alike.
     private static func read(_ key: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

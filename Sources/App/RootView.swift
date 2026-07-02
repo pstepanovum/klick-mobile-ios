@@ -17,40 +17,61 @@ struct RootView: View {
         AVCaptureDevice.requestAccess(for: .video) { _ in }
     }
 
+    /// The call the fullScreenCover presents: hidden while minimized (the floating overlay
+    /// takes over) without touching `activeCall` — dismissing the cover must never tear the
+    /// live call down. The setter ignores dismissals for the same reason.
+    private var presentedCall: Binding<CallKitManager.ActiveCall?> {
+        Binding(
+            get: { callKit.callMinimized ? nil : callKit.activeCall },
+            set: { _ in }
+        )
+    }
+
     var body: some View {
-        Group {
-            if session.isAuthenticated {
-                TabView {
-                    ConversationsView()
-                        .tabItem {
-                            Image("ic_line_message_3").renderingMode(.template)
-                            Text("Chats")
-                        }
-                    FriendsView()
-                        .tabItem {
-                            Image(KlicIcon.user.line).renderingMode(.template)
-                            Text("Friends")
-                        }
-                    CallDialView()
-                        .tabItem {
-                            Image(KlicIcon.phone.line).renderingMode(.template)
-                            Text("Call")
-                        }
-                    SettingsView()
-                        .tabItem {
-                            Image(KlicIcon.settings.line).renderingMode(.template)
-                            Text("Settings")
-                        }
+        ZStack {
+            Group {
+                if session.isAuthenticated {
+                    TabView {
+                        ConversationsView()
+                            .tabItem {
+                                Image("ic_line_message_3").renderingMode(.template)
+                                Text("Chats")
+                            }
+                        FriendsView()
+                            .tabItem {
+                                Image(KlicIcon.user.line).renderingMode(.template)
+                                Text("Friends")
+                            }
+                        CallDialView()
+                            .tabItem {
+                                Image(KlicIcon.phone.line).renderingMode(.template)
+                                Text("Call")
+                            }
+                        SettingsView()
+                            .tabItem {
+                                Image(KlicIcon.settings.line).renderingMode(.template)
+                                Text("Settings")
+                            }
+                    }
+                    .tint(KlicColor.primary)
+                    .onAppear { requestCallPermissions() }
+                } else if didGetStarted {
+                    AuthView()
+                } else {
+                    WelcomeView { withAnimation { didGetStarted = true } }
                 }
-                .tint(KlicColor.primary)
-                .onAppear { requestCallPermissions() }
-            } else if didGetStarted {
-                AuthView()
-            } else {
-                WelcomeView { withAnimation { didGetStarted = true } }
+            }
+
+            // Floating in-call overlay while minimized, above all navigation. Disappears on
+            // its own when the call ends (activeCall goes nil → callMinimized resets).
+            if callKit.callMinimized, let call = callKit.activeCall {
+                MinimizedCallOverlay(call: call)
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    .zIndex(1)
             }
         }
-        .fullScreenCover(item: $callKit.activeCall) { call in
+        .animation(.spring(response: 0.3), value: callKit.callMinimized)
+        .fullScreenCover(item: presentedCall) { call in
             CallView(call: call)
         }
         .enableInjection()

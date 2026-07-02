@@ -48,6 +48,30 @@ struct CallView: View {
                 }
                 .padding(.vertical, 56)
 
+                // Minimize: collapse the call screen into the floating root overlay so the
+                // rest of the app is browsable mid-call. UI-only — media keeps running.
+                VStack {
+                    HStack {
+                        Button {
+                            callKit.callMinimized = true
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(shouldShowVideo ? Color.white : KlicColor.textPrimary)
+                                .frame(width: 38, height: 38)
+                                .background(
+                                    shouldShowVideo ? Color.black.opacity(0.35) : KlicColor.surfaceRaised,
+                                    in: Circle()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 56)
+
                 // Draggable picture-in-picture card: in the 1:1 layout it holds the secondary
                 // feed and swaps on tap; in the grid it's always the local camera preview.
                 if isGrid, let local {
@@ -156,8 +180,13 @@ struct CallView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 24) {
-            circleButton(service.micEnabled ? "mic.fill" : "mic.slash.fill") {
+        // With the camera on, the switch-camera button joins the row (5 buttons) —
+        // shrink sizes/spacing so everything still fits on narrow phones.
+        let compact = service.cameraEnabled
+        let buttonSize: CGFloat = compact ? 54 : 64
+        let endSize: CGFloat = compact ? 64 : 72
+        return HStack(spacing: compact ? 14 : 24) {
+            circleButton(service.micEnabled ? "mic.fill" : "mic.slash.fill", size: buttonSize) {
                 Task {
                     await service.toggleMic()
                     CallActivityController.update(
@@ -167,20 +196,21 @@ struct CallView: View {
                     )
                 }
             }
-            // Speaker / earpiece toggle — most useful on a voice call (video defaults to speaker).
-            if !shouldShowVideo {
-                circleButton(
-                    service.speakerOn ? "speaker.wave.2.fill" : "speaker.slash.fill",
-                    fill: service.speakerOn ? KlicColor.primary : KlicColor.surfaceRaised,
-                    iconColor: service.speakerOn ? KlicColor.onPrimary : KlicColor.textPrimary
-                ) {
-                    service.toggleSpeaker()
-                }
+            // Speaker / earpiece toggle — shown on voice AND video calls (video auto-routes to
+            // the speaker, but the user can still force the earpiece; the automatic route only
+            // re-applies when the video state next flips).
+            circleButton(
+                service.speakerOn ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                fill: service.speakerOn ? KlicColor.primary : KlicColor.surfaceRaised,
+                iconColor: service.speakerOn ? KlicColor.onPrimary : KlicColor.textPrimary,
+                size: buttonSize
+            ) {
+                service.toggleSpeaker()
             }
-            circleButton("phone.down.fill", fill: KlicColor.danger, iconColor: KlicColor.onPrimary, size: 72) {
+            circleButton("phone.down.fill", fill: KlicColor.danger, iconColor: KlicColor.onPrimary, size: endSize) {
                 CallKitManager.shared.requestEnd()
             }
-            circleButton(service.cameraEnabled ? "video.fill" : "video.slash.fill") {
+            circleButton(service.cameraEnabled ? "video.fill" : "video.slash.fill", size: buttonSize) {
                 Task {
                     await service.toggleCamera()
                     CallActivityController.update(
@@ -191,7 +221,7 @@ struct CallView: View {
                 }
             }
             if service.cameraEnabled {
-                circleButton("arrow.triangle.2.circlepath.camera") {
+                circleButton("arrow.triangle.2.circlepath.camera", size: buttonSize) {
                     Task { await service.switchCamera() }
                 }
             }

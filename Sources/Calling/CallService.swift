@@ -306,11 +306,15 @@ final class CallService: NSObject, ObservableObject {
     }
 
     /// Recompute the tracks we render. Track accessors target LiveKit Swift SDK v2.
+    /// A muted publication counts as "no video": setCamera(false) MUTES the track (fast
+    /// re-enable) rather than unpublishing it, so without this filter the receiving side
+    /// keeps rendering the last decoded (frozen) frame after the peer turns their camera off.
     private func refreshTracks() {
-        localVideoTrack = room.localParticipant.videoTracks.first?.track as? VideoTrack
+        localVideoTrack = room.localParticipant.videoTracks
+            .first { !$0.isMuted }?.track as? VideoTrack
         remoteVideoTrack = room.remoteParticipants.values
             .flatMap { $0.videoTracks }
-            .first?.track as? VideoTrack
+            .first { !$0.isMuted }?.track as? VideoTrack
         refreshParticipants()
         APIClient.mobileDiagnostic(
             event: "livekit.tracks.refresh",
@@ -329,7 +333,8 @@ final class CallService: NSObject, ObservableObject {
             return RemoteCallParticipant(
                 id: id,
                 name: name,
-                videoTrack: p.videoTracks.first?.track as? VideoTrack,
+                // Muted video publication = camera off → the tile falls back to the avatar.
+                videoTrack: p.videoTracks.first { !$0.isMuted }?.track as? VideoTrack,
                 micMuted: !p.isMicrophoneEnabled(),
                 isSpeaking: p.isSpeaking,
                 isInGrace: false
@@ -542,7 +547,17 @@ extension CallService: RoomDelegate {
     }
 
     nonisolated func room(_ room: Room, participant: Participant, trackPublication: TrackPublication, didUpdateIsMuted isMuted: Bool) {
-        Task { @MainActor in refreshParticipants() }
+        Task { @MainActor in
+            // A video mute/unmute is the peer toggling their camera (setCamera mutes, it
+            // doesn't unpublish): recompute the rendered tracks so the frozen last frame is
+            // replaced by the avatar placeholder (and vice versa on unmute). refreshTracks
+            // also re-evaluates the speaker/earpiece route, same as subscribe/unsubscribe.
+            if trackPublication.kind == .video {
+                refreshTracks()
+            } else {
+                refreshParticipants()
+            }
+        }
     }
 
     nonisolated func room(_ room: Room, didUpdateSpeakingParticipants participants: [Participant]) {
