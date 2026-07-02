@@ -146,7 +146,7 @@ private extension Message {
             id: id, conversationId: conversationId, senderId: senderId, body: newBody,
             kind: newKind, createdAt: createdAt, attachments: attachments, status: status,
             stickerId: stickerId, stickerUrl: stickerUrl, call: call, replyTo: replyTo,
-            reactions: reactions, deletedAt: deletedAt, senderDeviceId: senderDeviceId,
-            envelopes: envelopes)
+            reactions: reactions, deletedAt: deletedAt, starred: starred,
+            senderDeviceId: senderDeviceId, envelopes: envelopes)
     }
 }

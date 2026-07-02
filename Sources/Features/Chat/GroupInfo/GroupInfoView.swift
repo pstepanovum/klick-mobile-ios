@@ -11,6 +11,10 @@ struct GroupInfoView: View {
     let onSelectMember: (ChatProfileTarget) -> Void
     let onUpdated: (GroupConversationDetails) -> Void
     let onDeleted: () -> Void
+    /// Starts (or joins) the group call via the chat's existing flows. "AUDIO" | "VIDEO".
+    var onStartCall: (String) -> Void = { _ in }
+    /// Opens the chat's message-search sheet (the info page dismisses itself first).
+    var onSearchMessages: () -> Void = {}
 
     var body: some View {
         GroupInfoContent(
@@ -20,7 +24,9 @@ struct GroupInfoView: View {
             fallbackMembers: fallbackMembers,
             onSelectMember: onSelectMember,
             onUpdated: onUpdated,
-            onDeleted: onDeleted
+            onDeleted: onDeleted,
+            onStartCall: onStartCall,
+            onSearchMessages: onSearchMessages
         )
         .enableInjection()
     }
@@ -35,6 +41,8 @@ private struct GroupInfoContent: View {
     let onSelectMember: (ChatProfileTarget) -> Void
     let onUpdated: (GroupConversationDetails) -> Void
     let onDeleted: () -> Void
+    let onStartCall: (String) -> Void
+    let onSearchMessages: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var details: GroupConversationDetails?
@@ -81,6 +89,22 @@ private struct GroupInfoContent: View {
         }
     }
 
+    private var createdByName: String? {
+        guard let creatorId = resolvedDetails?.createdById else { return nil }
+        if let member = members.first(where: { $0.id == creatorId }) {
+            return member.isMe ? "you" : member.displayName
+        }
+        return fallbackMembers.first(where: { $0.id == creatorId })?.displayName
+    }
+
+    private var createdAtText: String? {
+        guard let date = ChatLocalPrefs.parseISO(resolvedDetails?.createdAt) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
     var body: some View {
         List {
             Section {
@@ -109,13 +133,21 @@ private struct GroupInfoContent: View {
 
             Section {
                 HStack(spacing: 12) {
-                    actionButton(title: "Audio", systemName: "phone.fill", disabled: true) {}
-                    actionButton(title: "Video", systemName: "video.fill", disabled: true) {}
+                    actionButton(title: "Audio", systemName: "phone.fill") {
+                        onStartCall("AUDIO")
+                        dismiss()
+                    }
+                    actionButton(title: "Video", systemName: "video.fill") {
+                        onStartCall("VIDEO")
+                        dismiss()
+                    }
                     actionButton(title: "Add", systemName: "person.badge.plus.fill", disabled: !isAdmin) {
                         addSheet = true
                     }
+                    // Message search over the chat's history (CALLS.md §8.4).
                     actionButton(title: "Search", systemName: "magnifyingglass") {
-                        withAnimation(.easeInOut(duration: 0.15)) { searchMembers.toggle() }
+                        onSearchMessages()
+                        dismiss()
                     }
                 }
                 .listRowInsets(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
@@ -128,6 +160,24 @@ private struct GroupInfoContent: View {
                         .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                         .listRowBackground(KlicColor.background)
                 }
+            }
+
+            // Media / Starred / Manage storage / Save to Photos + Notifications (§8.4)
+            Section {
+                ChatInfoCommonRows(
+                    conversationId: conversationId,
+                    members: fallbackMembers.isEmpty
+                        ? members.map { ChatProfileTarget(id: $0.id, username: $0.username, displayName: $0.displayName, avatarUrl: $0.avatarUrl) }
+                        : fallbackMembers
+                )
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+            }
+
+            Section {
+                ChatNotificationsCard(conversationId: conversationId, isGroup: true)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
             }
 
             if editing {
@@ -178,6 +228,25 @@ private struct GroupInfoContent: View {
                         .listRowBackground(KlicColor.background)
                 }
             }
+
+            // Footer: who created the group and when (§8.4).
+            if createdByName != nil || createdAtText != nil {
+                Section {
+                    VStack(alignment: .center, spacing: 2) {
+                        if let createdByName {
+                            Text("Created by \(createdByName)")
+                        }
+                        if let createdAtText {
+                            Text("Created \(createdAtText)")
+                        }
+                    }
+                    .font(KlicFont.caption(12))
+                    .foregroundStyle(KlicColor.textMuted)
+                    .frame(maxWidth: .infinity)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 12, trailing: 0))
+                    .listRowBackground(KlicColor.background)
+                }
+            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -209,7 +278,12 @@ private struct GroupInfoContent: View {
         }
         .onChange(of: pickedCover) { _, item in
             guard let item else { return }
-            Task { await uploadCover(item) }
+            Task {
+                await uploadCover(item)
+                // Reset the selection or picking the SAME photo again never fires
+                // onChange — this is what made re-uploading a cover look broken.
+                pickedCover = nil
+            }
         }
         .confirmationDialog("Delete this group?", isPresented: $showDeleteDialog, titleVisibility: .visible) {
             Button("Delete Group", role: .destructive) {

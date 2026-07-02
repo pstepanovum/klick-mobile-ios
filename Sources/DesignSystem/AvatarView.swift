@@ -69,12 +69,26 @@ actor RemoteImageStore {
         return image
     }
 
+    /// Cached-only lookup (memory/disk, no network) — used by the auto-download
+    /// gate so already-fetched photos still render when auto-download is off.
+    func cachedImage(for url: URL) -> UIImage? {
+        let key = url.absoluteString
+        if let cached = memory.object(forKey: key as NSString) { return cached }
+        if let cached = try? Data(contentsOf: fileURL(for: key)),
+           let image = UIImage(data: cached) {
+            remember(image, for: key)
+            return image
+        }
+        return nil
+    }
+
     private func fetch(_ url: URL, key: String) async -> UIImage? {
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse,
                   (200 ... 299).contains(http.statusCode),
                   let image = UIImage(data: data) else { return nil }
+            DataUsageTracker.shared.record(type: .photos, sent: 0, received: data.count)
             remember(image, for: key)
             if data.count <= maxDiskEntryBytes {
                 try? data.write(to: fileURL(for: key), options: .atomic)
@@ -83,6 +97,33 @@ actor RemoteImageStore {
         } catch {
             return nil
         }
+    }
+
+    /// The on-disk image cache location ("Photos" in the Data & Storage scan).
+    nonisolated static var diskDirectory: URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        return (caches ?? FileManager.default.temporaryDirectory)
+            .appendingPathComponent("klic-remote-images", isDirectory: true)
+    }
+
+    /// Disk bytes cached for one specific remote URL (0 when absent).
+    nonisolated static func cachedBytes(forURLString key: String) -> Int64 {
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let file = digest.map { String(format: "%02x", $0) }.joined()
+        let url = diskDirectory.appendingPathComponent(file)
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        return Int64(size)
+    }
+
+    nonisolated static func removeCached(forURLString key: String) {
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let file = digest.map { String(format: "%02x", $0) }.joined()
+        try? FileManager.default.removeItem(at: diskDirectory.appendingPathComponent(file))
+    }
+
+    /// Drop the in-memory cache (used right after the disk cache is cleared).
+    func purgeMemory() {
+        memory.removeAllObjects()
     }
 
     private func remember(_ image: UIImage, for key: String) {

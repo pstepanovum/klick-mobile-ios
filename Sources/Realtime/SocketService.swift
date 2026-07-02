@@ -152,6 +152,12 @@ final class SocketService: ObservableObject {
             guard let dict = data.first as? [String: Any] else { return }
             let invite = CallInvite(dict: dict)
             self?.incomingCall = invite
+            // Foreground ringer policy (CALLS.md §8.2): the server still emits the
+            // socket invite when this chat's calls are muted — the client skips the ring.
+            if ChatLocalPrefs.callsMuted(invite.conversationId) {
+                APIClient.mobileDiagnostic(event: "callkit.skippedMutedChat", callId: invite.id)
+                return
+            }
             // Ring via the system call UI (Dynamic Island / Lock Screen).
             CallKitManager.shared.reportIncoming(invite)
         }

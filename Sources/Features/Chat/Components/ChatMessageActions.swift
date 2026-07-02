@@ -14,6 +14,7 @@ struct MessageActionsOverlay: View {
     let onReact: (String) -> Void
     let onReply: () -> Void
     let onCopy: () -> Void
+    var onToggleStar: () -> Void = {}
     let onDelete: () -> Void
     let onDismiss: () -> Void
 
@@ -88,6 +89,11 @@ struct MessageActionsOverlay: View {
                 Divider().overlay(KlicColor.surfaceRaised)
                 ActionRow(title: "Copy", systemImage: "doc.on.doc") { onCopy(); onDismiss() }
             }
+            Divider().overlay(KlicColor.surfaceRaised)
+            ActionRow(
+                title: message.starred == true ? "Unstar" : "Star",
+                systemImage: message.starred == true ? "star.slash" : "star"
+            ) { onToggleStar(); onDismiss() }
             Divider().overlay(KlicColor.surfaceRaised)
             ActionRow(title: "Delete", systemImage: "trash", destructive: true) { onDelete() }
         }

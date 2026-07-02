@@ -56,6 +56,12 @@ final class CallKitManager: NSObject, ObservableObject {
     private var recentlyEndedCallIds = Set<String>()
 
     override init() {
+        provider = CXProvider(configuration: Self.providerConfiguration())
+        super.init()
+        provider.setDelegate(self, queue: nil)
+    }
+
+    private static func providerConfiguration() -> CXProviderConfiguration {
         let config = CXProviderConfiguration()
         config.supportsVideo = true
         config.maximumCallsPerCallGroup = 1
@@ -67,10 +73,16 @@ final class CallKitManager: NSObject, ObservableObject {
         config.includesCallsInRecents = true
         // Custom ringtone CallKit plays for an incoming voice/video call (bundled CallKit-
         // compatible sound). Falls back to the system ringtone if the resource is missing.
-        config.ringtoneSound = "ringtone.caf"
-        provider = CXProvider(configuration: config)
-        super.init()
-        provider.setDelegate(self, queue: nil)
+        // CallKit only supports ONE global ringtone — the Settings → Notifications pick.
+        // Per-chat ringtone selections apply where the app itself controls playback.
+        config.ringtoneSound = ChatLocalPrefs.globalRingtone ?? "ringtone.caf"
+        return config
+    }
+
+    /// Re-apply the provider configuration after the global ringtone pick changes.
+    /// Configuration-only — call/audio sequencing is untouched.
+    func updateRingtone() {
+        provider.configuration = Self.providerConfiguration()
     }
 
     // MARK: Incoming (from socket or VoIP push)

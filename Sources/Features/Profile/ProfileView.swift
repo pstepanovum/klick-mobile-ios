@@ -12,6 +12,11 @@ struct ProfileView: View {
     var onCall: (String) -> Void          // "AUDIO" | "VIDEO"
     var onMessage: (() -> Void)? = nil    // shown only when provided (e.g. from Friends)
     var onInvite: (() -> Void)? = nil
+    /// When opened from a chat: the direct conversation's id — unlocks the chat-info
+    /// sections (media browser, starred, storage, save-to-photos, notifications; §8.4).
+    var conversationId: String? = nil
+    /// Chat members (incl. the current user) for sender-name resolution in those sections.
+    var chatMembers: [ChatProfileTarget] = []
 
     @ObservedObject private var socket = SocketService.shared
     @Environment(\.dismiss) private var dismiss
@@ -50,6 +55,19 @@ struct ProfileView: View {
                     }
                 }
                 .padding(.top, 8)
+
+                // Chat-info sections (only when reached from a conversation; §8.4).
+                if let conversationId {
+                    ChatInfoCommonRows(
+                        conversationId: conversationId,
+                        members: chatMembers.isEmpty
+                            ? [ChatProfileTarget(id: userId, username: username, displayName: displayName, avatarUrl: avatarUrl)]
+                            : chatMembers
+                    )
+                    .padding(.top, 12)
+
+                    ChatNotificationsCard(conversationId: conversationId, isGroup: false)
+                }
             }
             .frame(maxWidth: 520)
             .frame(maxWidth: .infinity)

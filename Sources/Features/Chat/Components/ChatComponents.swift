@@ -155,6 +155,9 @@ struct MessageBubble: View {
                     showTime: message.body.isEmpty,
                     time: shortTime(message.createdAt),
                     status: message.status,
+                    starred: message.starred == true,
+                    highlightMentions: isGroupChat,
+                    conversationId: message.conversationId,
                     onOpenAttachment: onOpenAttachment,
                     onLongPress: onLongPress
                 )
@@ -183,6 +186,8 @@ struct MessageBubble: View {
                                 text: message.body,
                                 font: UIFont(name: "TikTokSans-Regular", size: 16) ?? .systemFont(ofSize: 16),
                                 textColor: UIColor(isMine ? KlicColor.onPrimary : KlicColor.textPrimary),
+                                highlightMentions: isGroupChat,
+                                mentionColor: UIColor(isMine ? KlicColor.onPrimary : KlicColor.primary),
                                 onLongPress: onLongPress
                             )
                             inlineTimeStatus(onPrimary: isMine)
@@ -236,6 +241,9 @@ struct MessageBubble: View {
     @ViewBuilder
     private func inlineTimeStatus(onPrimary: Bool) -> some View {
         HStack(spacing: 3) {
+            if message.starred == true {
+                StarIndicator(onPrimary: onPrimary)
+            }
             Text(shortTime(message.createdAt))
                 .font(KlicFont.caption(11))
                 .foregroundStyle(onPrimary ? KlicColor.onPrimary.opacity(0.65) : KlicColor.textMuted)

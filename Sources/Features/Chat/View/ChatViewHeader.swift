@@ -7,8 +7,11 @@ extension ChatView {
             NavigationLink {
                 ProfileView(
                     userId: peer.id, username: peer.username,
-                    displayName: peer.displayName, avatarUrl: peer.avatarUrl
-                ) { kind in Task { await startCall(kind: kind) } }
+                    displayName: peer.displayName, avatarUrl: peer.avatarUrl,
+                    onCall: { kind in Task { await startCall(kind: kind) } },
+                    conversationId: conversation.id,
+                    chatMembers: memberTargets
+                )
             } label: {
                 HStack(spacing: 8) {
                     AvatarView(url: peer.avatarUrl, name: peer.displayName, size: 32)
@@ -45,6 +48,12 @@ extension ChatView {
                     },
                     onDeleted: {
                         dismiss()
+                    },
+                    onStartCall: { kind in
+                        Task { await startCall(kind: kind) }
+                    },
+                    onSearchMessages: {
+                        showMessageSearch = true
                     }
                 )
             } label: {
