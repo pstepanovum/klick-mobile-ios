@@ -22,6 +22,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
         voipRegistry = registry
+
+        // Launch beacon: distinguishes "iOS never launched the killed app for a VoIP push"
+        // (no beacon in the server journal) from "launched but died in the push path"
+        // (beacon present, pushkit.* absent) when diagnosing missed rings.
+        let state = application.applicationState
+        APIClient.mobileDiagnostic(
+            event: "app.launch",
+            detail: state == .background ? "background" : state == .inactive ? "inactive" : "active"
+        )
         return true
     }
 
@@ -79,6 +88,12 @@ extension AppDelegate: PKPushRegistryDelegate {
         mustReport: Bool,
         completion: @escaping () -> Void
     ) {
+        // First-touch beacon, before any guard — proves the push reached the process.
+        APIClient.mobileDiagnostic(
+            event: "pushkit.push",
+            callId: d["callId"] as? String,
+            detail: "type=\(d["type"] as? String ?? "invite") mustReport=\(mustReport)"
+        )
         if d["type"] as? String == "call.end" {
             let callId = d["callId"] as? String ?? ""
             APIClient.mobileDiagnostic(event: "pushkit.callEnd.received", callId: callId)
