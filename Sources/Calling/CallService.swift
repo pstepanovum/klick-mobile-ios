@@ -64,6 +64,12 @@ final class CallService: NSObject, ObservableObject {
     /// speaker (video) ↔ earpiece (audio-only) switching as cameras turn on/off mid-call.
     private var videoRouteActive = false
 
+    /// True while CallKit holds the call (CXSetHeldCallAction — e.g. the user answered a
+    /// native phone call). Media stays connected; only the mic and audio engine are gated.
+    @Published private(set) var isOnHold = false
+    /// Mic state to restore when the hold ends.
+    private var micEnabledBeforeHold = true
+
     override init() {
         super.init()
         // CallKit owns the AVAudioSession lifecycle: it calls setActive(true) on didActivate
@@ -186,6 +192,26 @@ final class CallService: NSObject, ObservableObject {
     func toggleMic() async { await setMic(enabled: !micEnabled) }
     func toggleCamera() async { await setCamera(enabled: !cameraEnabled) }
 
+    /// CallKit put the call on (or took it off) hold. Uses the exact same engine gate and
+    /// mic plumbing as join/publishMicIfReady — the CallKit-owned AVAudioSession itself is
+    /// never touched, so the audio sequencing that join() relies on stays intact.
+    /// On hold: remember the mic state, mute, gate the engine off. On unhold: engine back
+    /// on first (so capture+playout resume together), then restore the previous mic state.
+    func setHold(_ onHold: Bool) async {
+        guard isOnHold != onHold else { return }
+        if onHold {
+            micEnabledBeforeHold = micEnabled
+            await setMic(enabled: false)
+            try? AudioManager.shared.setEngineAvailability(.none)
+            isOnHold = true
+        } else {
+            try? AudioManager.shared.setEngineAvailability(.default)
+            await setMic(enabled: micEnabledBeforeHold)
+            isOnHold = false
+        }
+        APIClient.mobileDiagnostic(event: "livekit.hold", callId: currentCallId, detail: onHold ? "on" : "off")
+    }
+
     /// Toggle the call audio between the loudspeaker and the earpiece/headset. Overriding the
     /// output port routes immediately; `.none` lets the system pick the preferred route (a
     /// connected Bluetooth/wired headset wins), `.speaker` forces the loudspeaker.
@@ -285,6 +311,8 @@ final class CallService: NSObject, ObservableObject {
         // audio isn't left disabled; the next join() re-gates it off until CallKit activates.
         audioSessionActive = false
         micPublished = false
+        isOnHold = false
+        micEnabledBeforeHold = true
         try? AudioManager.shared.setEngineAvailability(.default)
         // Session deactivation is CallKit's responsibility (isAutomaticDeactivationEnabled = false).
         // Re-enabling the engine here lets system audio resume after the call ends.

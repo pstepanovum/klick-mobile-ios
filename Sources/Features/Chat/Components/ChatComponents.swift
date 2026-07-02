@@ -131,23 +131,36 @@ struct MessageBubble: View {
         .padding(.vertical, 1)
     }
 
+    /// IMAGE/VIDEO attachments render as one unified card (bento grid + caption inside),
+    /// so the plain text bubble is skipped for them — the caption lives in the card.
+    private var hasMediaAttachments: Bool {
+        message.attachments.contains { $0.isImage || $0.isVideo }
+    }
+
     private var messageContent: some View {
         VStack(alignment: isMine ? .trailing : .leading, spacing: 4) {
             if !message.attachments.isEmpty {
                 if let reply = message.replyTo {
                     ReplyQuoteView(reply: reply, authorName: replyAuthorName)
                 }
+                if showSenderName, hasMediaAttachments, let senderName {
+                    Text(senderName)
+                        .font(KlicFont.caption(12))
+                        .foregroundStyle(KlicColor.primary.opacity(0.95))
+                }
                 MessageAttachmentsView(
                     attachments: message.attachments,
                     isMine: isMine,
+                    caption: hasMediaAttachments ? message.body : "",
                     showTime: message.body.isEmpty,
                     time: shortTime(message.createdAt),
                     status: message.status,
-                    onOpenAttachment: onOpenAttachment
+                    onOpenAttachment: onOpenAttachment,
+                    onLongPress: onLongPress
                 )
             }
 
-            if !message.body.isEmpty {
+            if !message.body.isEmpty && !hasMediaAttachments {
                 VStack(alignment: isMine ? .trailing : .leading, spacing: 6) {
                     if showSenderName, let senderName {
                         Text(senderName)

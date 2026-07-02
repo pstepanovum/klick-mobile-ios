@@ -27,24 +27,36 @@ struct MinimizedCallOverlay: View {
             let defaultCenter = CGPoint(x: geo.size.width - size.width / 2 - 12,
                                         y: size.height / 2 + 12)
             let committed = center ?? defaultCenter
-            let live = CGPoint(x: committed.x + dragTranslation.width,
-                               y: committed.y + dragTranslation.height)
 
             content
                 .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-                .position(live)
+                .position(committed)
+                .offset(dragTranslation)
                 .gesture(
                     DragGesture()
                         .updating($dragTranslation) { value, state, _ in state = value.translation }
                         .onEnded { value in
-                            var c = CGPoint(x: committed.x + value.translation.width,
-                                            y: committed.y + value.translation.height)
-                            // Snap to the nearest side, clamp vertically to stay on screen.
+                            // Commit where the finger let go, unanimated (the gesture state
+                            // resets to .zero in the same update — no jump), then spring to
+                            // the edge the flick was headed for (predicted end point).
+                            let release = CGPoint(x: committed.x + value.translation.width,
+                                                  y: committed.y + value.translation.height)
+                            var transaction = Transaction()
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) { center = release }
+
+                            let predicted = CGPoint(x: committed.x + value.predictedEndTranslation.width,
+                                                    y: committed.y + value.predictedEndTranslation.height)
+                            var target = predicted
                             let halfW = size.width / 2 + 12
-                            c.x = c.x < geo.size.width / 2 ? halfW : geo.size.width - halfW
-                            c.y = min(max(c.y, size.height / 2 + 12),
-                                      geo.size.height - size.height / 2 - 12)
-                            withAnimation(.spring(response: 0.3)) { center = c }
+                            target.x = predicted.x < geo.size.width / 2 ? halfW : geo.size.width - halfW
+                            target.y = min(max(target.y, size.height / 2 + 12),
+                                           geo.size.height - size.height / 2 - 12)
+                            Task { @MainActor in
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                                    center = target
+                                }
+                            }
                         }
                 )
                 .onTapGesture { callKit.callMinimized = false }
@@ -58,6 +70,16 @@ struct MinimizedCallOverlay: View {
         if let track = service.remoteVideoTrack {
             CallVideoView(track: track)
                 .frame(width: tileSize.width, height: tileSize.height)
+                .overlay {
+                    if service.isOnHold {
+                        ZStack {
+                            Color.black.opacity(0.55)
+                            Text("On Hold")
+                                .font(KlicFont.caption(12))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.25), lineWidth: 1))
         } else {
@@ -68,13 +90,18 @@ struct MinimizedCallOverlay: View {
     private var voicePill: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(KlicColor.read)
+                .fill(service.isOnHold ? KlicColor.textMuted : KlicColor.read)
                 .frame(width: 8, height: 8)
             Text(call.peerName)
                 .font(KlicFont.caption(14))
                 .foregroundStyle(KlicColor.textPrimary)
                 .lineLimit(1)
-            if let connectedAt = callKit.connectedAt {
+            if service.isOnHold {
+                Text("On Hold")
+                    .font(KlicFont.caption(13))
+                    .foregroundStyle(KlicColor.textMuted)
+                    .lineLimit(1)
+            } else if let connectedAt = callKit.connectedAt {
                 Text(connectedAt, style: .timer)
                     .font(KlicFont.caption(13))
                     .monospacedDigit()
@@ -89,6 +116,9 @@ struct MinimizedCallOverlay: View {
         .padding(.horizontal, 14)
         .frame(width: pillSize.width, height: pillSize.height)
         .background(Capsule().fill(KlicColor.surfaceRaised))
-        .overlay(Capsule().stroke(KlicColor.read.opacity(0.5), lineWidth: 1))
+        .overlay(Capsule().stroke(
+            (service.isOnHold ? KlicColor.textMuted : KlicColor.read).opacity(0.5),
+            lineWidth: 1
+        ))
     }
 }

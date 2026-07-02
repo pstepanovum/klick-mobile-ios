@@ -69,8 +69,8 @@ targets:
         INFOPLIST_FILE: Widget/Info.plist
 
   # Share-sheet target ("Share to" panel). Compiles only the minimal shared sources it
-  # needs (TokenStore/AppConfig/KlicColor) — NOT the full APIClient, which would drag in
-  # the E2EE/libsignal stack; networking lives in ShareExtension/ShareAPI.swift.
+  # needs (TokenStore/AppConfig/KlicColor/KlicFont) — NOT the full APIClient, which would
+  # drag in the E2EE/libsignal stack; networking lives in ShareExtension/ShareAPI.swift.
   KlicShare:
     type: app-extension
     platform: iOS
@@ -79,6 +79,10 @@ targets:
       - path: Sources/Networking/TokenStore.swift
       - path: Sources/App/AppConfig.swift
       - path: Sources/DesignSystem/KlicColor.swift
+      - path: Sources/DesignSystem/KlicFont.swift
+      # Only the face the panel actually uses — registered via UIAppFonts in the
+      # extension's Info.plist.
+      - path: Resources/Fonts/TikTokSans-SemiBold.ttf
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.klic.mobile.app.share
