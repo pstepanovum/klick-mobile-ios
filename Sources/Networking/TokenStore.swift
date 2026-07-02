@@ -34,7 +34,9 @@ enum TokenStore {
             kSecValueData as String: Data(value.utf8),
             // Readable after the first unlock so background/VoIP-push wakeups (and a
             // locked device) can still load the token to refresh and place calls.
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            // ThisDeviceOnly: tokens never leave in backups/transfers — a restored
+            // install re-authenticates instead of inheriting another device's session.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         SecItemAdd(query as CFDictionary, nil)
     }
